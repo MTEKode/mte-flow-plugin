@@ -8,6 +8,8 @@ export type CommandContext = {
   flags: Flags
   positionals: string[]
   cwd: string
+  /** Tokens after a bare `--` (passed through verbatim). */
+  rest?: string[]
 }
 
 /** Resolves an exit code for the process; commands never call process.exit themselves. */

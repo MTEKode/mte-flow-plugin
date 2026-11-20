@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 import { realpathSync } from 'node:fs'
 import { checkCommand } from './commands/check.ts'
+import { dispatchCommand } from './commands/dispatch.ts'
 import { deployCheckConfigCommand, deployCheckValidatedCommand } from './commands/deploy-check.ts'
 import type { Command, Flags } from './commands/flags.ts'
+import { guardCommand } from './commands/guard.ts'
+import { installCommand } from './commands/install.ts'
 import { memoryCommand } from './commands/memory.ts'
+import { pinGetCommand, pinSetCommand } from './commands/pin.ts'
+import { plannerClaimCommand, plannerShowCommand } from './commands/planner.ts'
 import { readPackageVersion } from './version.ts'
 
 /**
@@ -14,11 +19,18 @@ export const COMMANDS: Record<string, Command> = {
   memory: memoryCommand,
   check: checkCommand,
   'deploy-check config': deployCheckConfigCommand,
-  'deploy-check validated': deployCheckValidatedCommand
+  'deploy-check validated': deployCheckValidatedCommand,
+  guard: guardCommand,
+  dispatch: dispatchCommand,
+  'pin set': pinSetCommand,
+  'pin get': pinGetCommand,
+  'planner claim': plannerClaimCommand,
+  'planner show': plannerShowCommand,
+  install: installCommand
 }
 
 /** Flags that never take a value, so `--json config` does not swallow the next token. */
-export const BOOLEAN_FLAGS: Set<string> = new Set(['json', 'failed', 'detect', 'help', 'version'])
+export const BOOLEAN_FLAGS: Set<string> = new Set(['json', 'failed', 'detect', 'help', 'version', 'force', 'claude-hook'])
 
 const HELP = `mte - MTE Flow engine
 
@@ -27,14 +39,24 @@ Usage:
   mte check [--json]                                                      run lint/typecheck/test; exit code = failing groups
   mte deploy-check config [--json]                                        show deploy-check config (never the password)
   mte deploy-check validated --summary <text> [--failed]                  report on the linked Linear issue
+  mte guard --command <cmd> [--session-id <id>] [--terminal-handle <h>] [--claude-hook]   planner gate + worker pin (exit 2 = deny)
+  mte dispatch --task <id> [-- <extra worker-start args>]                 worker-start with the worker pin applied
+  mte pin set --agent <a> --model <m> [--effort <e>] | mte pin get --json
+  mte planner claim [--force] [--session-id <id>] [--terminal-handle <h>] | mte planner show --json
+  mte install [--agents claude,opencode] [--workspace <path>]             wire skill, hook/plugin and memory MCP
   mte --version | mte help
 `
 
-export function parseArgs(argv: readonly string[]): { positionals: string[]; flags: Flags } {
+export function parseArgs(argv: readonly string[]): { positionals: string[]; flags: Flags; rest: string[] } {
   const positionals: string[] = []
   const flags: Flags = new Map()
+  let rest: string[] = []
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i] ?? ''
+    if (arg === '--') {
+      rest = argv.slice(i + 1)
+      break
+    }
     if (!arg.startsWith('--')) {
       positionals.push(arg)
       continue
@@ -53,12 +75,12 @@ export function parseArgs(argv: readonly string[]): { positionals: string[]; fla
       i++
     }
   }
-  return { positionals, flags }
+  return { positionals, flags, rest }
 }
 
 /** Runs one invocation and returns the process exit code. */
 export async function main(argv: readonly string[], cwd: string = process.cwd()): Promise<number> {
-  const { positionals, flags } = parseArgs(argv)
+  const { positionals, flags, rest } = parseArgs(argv)
   if (flags.get('version') === true || positionals[0] === 'version') {
     console.log(readPackageVersion())
     return 0
@@ -74,7 +96,7 @@ export async function main(argv: readonly string[], cwd: string = process.cwd())
     process.stderr.write(`mte: unknown command: ${positionals.join(' ')}\n\n${HELP}`)
     return 1
   }
-  return command({ flags, positionals, cwd })
+  return command({ flags, positionals, cwd, rest })
 }
 
 // Direct execution only (tests import main without running it).

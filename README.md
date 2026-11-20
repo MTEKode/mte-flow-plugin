@@ -16,6 +16,23 @@ MTE Flow for stock Orca: `mte` Node package, Claude/opencode adapters, and the `
 
 Tests: `cd packages/mte && npm test` (or `node --test 'packages/mte/**/*.test.ts'` from the repo root). `src/cli.ts` holds the command table that further commands extend.
 
+## Agent setup
+
+`mte install [--agents claude,opencode] [--workspace <path>]` wires a workspace in one idempotent step (re-running changes nothing; JSON files are merged, unrelated keys survive; invalid JSON aborts without writing):
+
+| Agent | Writes |
+| --- | --- |
+| claude | `.claude/skills/mte/{SKILL.md,playbook.md}`, `.claude/settings.json` (PreToolUse `Bash` hook `mte guard --claude-hook`), `.mcp.json` (`mte-memory` = `mte memory --role orchestrator`) |
+| opencode | `.agents/skills/mte/{SKILL.md,playbook.md}`, `.opencode/plugins/mte-guard/index.js` (V2 plugin, `execute.before` on tool `shell`), `opencode.json` (`mcp.servers.mte-memory`, command as array) |
+| both | `.gitignore` gets `.mte/memory.db`, `.mte/planner.json`, `.mte/guard.log` |
+
+`mte` must be on `PATH` (hook, plugin and MCP all call it by name). Start a run with `/mte <goal>`.
+
+- **Planner gate**: `mte guard` denies `orca orchestration run-create` and `worker-start` unless the caller is the claimed planner (`.mte/planner.json`, first claim wins, `mte planner claim --force` replaces). On an unclaimed workspace the first `run-create` caller is auto-claimed; callers with no identity are never blocked. Identity: Claude native chat `ORCA_AGENT_SESSION_ID`, Claude terminal `ORCA_TERMINAL_HANDLE`, opencode the client env seen by the shell `create.before` event (else the opencode session id); the opencode plugin never trusts its own `process.env`.
+- **Worker pin**: `.mte/worker-pin.json` (`mte pin set --agent <a> --model <m> [--effort <e>]`, `mte pin get --json`). A `worker-start` missing the pin's `--agent/--model/--effort` is denied with the corrected command; opencode pins never carry `--effort`. `mte dispatch --task <id> [-- <extra args>]` applies the pin itself (extra flags win, used for escalation) and exits with orca's code.
+- **Fail open**: internal guard errors allow the command and log to `.mte/guard.log`.
+- **Not a security boundary**: a cooperative-agent guardrail only. Also set Orca's *Settings > Orchestration > Nested worker depth* to `1` (user setting `nestedWorkerMaxDepth`, not written by `mte`) so dispatched workers cannot start workers.
+
 ## Orca plugin
 
 `plugin/` is the `mtekode.mte-flow` Orca plugin (id `mte-flow`, trusted-worker, no build step). It only drives the `mte` CLI and stock Orca APIs.
