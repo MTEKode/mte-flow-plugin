@@ -1,2 +1,3 @@
 node_modules/
-.mte/memory.db
+.mte/memory.db*
+dist/

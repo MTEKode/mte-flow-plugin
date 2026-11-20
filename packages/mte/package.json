@@ -1,0 +1,23 @@
+{
+  "name": "@mtekode/mte",
+  "version": "0.3.0",
+  "description": "MTE Flow engine: memory MCP server, check runner and deploy-check.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "mte": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "files": [
+    "dist",
+    "assets",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node --disable-warning=ExperimentalWarning scripts/build.mjs",
+    "prepack": "npm run build",
+    "test": "node --test"
+  }
+}
