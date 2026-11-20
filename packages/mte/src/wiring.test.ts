@@ -39,6 +39,7 @@ function env(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const clean = { ...process.env }
   delete clean.ORCA_AGENT_SESSION_ID
   delete clean.ORCA_TERMINAL_HANDLE
+  delete clean.MTE_OPENCODE_SESSION
   return { ...clean, ...extra }
 }
 
@@ -178,6 +179,19 @@ describe('opencode session identity', () => {
     const ws = repo()
     assert.equal(mte(ws, ['planner', 'claim'], { MTE_OPENCODE_SESSION: 'ses_env' }).status, 0)
     assert.equal(readPlanner(ws)?.opencodeSessionId, 'ses_env')
+  })
+
+  it('claim refuses a flag identity that differs from the caller env; accepts flags when env lacks it', () => {
+    const ws = repo()
+    const refused = mte(ws, ['planner', 'claim', '--terminal-handle', 'X'], { ORCA_TERMINAL_HANDLE: 'Y' })
+    assert.equal(refused.status, 1)
+    assert.match(refused.stderr, /terminal-handle X differs from the caller's own ORCA_TERMINAL_HANDLE \(Y\)/)
+    assert.equal(readPlanner(ws), null)
+    assert.equal(mte(ws, ['planner', 'claim', '--opencode-session', 'ses_a'], { MTE_OPENCODE_SESSION: 'ses_b' }).status, 1)
+    assert.equal(mte(ws, ['planner', 'claim', '--terminal-handle', 'Y'], { ORCA_TERMINAL_HANDLE: 'Y' }).status, 0)
+    const ws2 = repo()
+    assert.equal(mte(ws2, ['planner', 'claim', '--terminal-handle', 'X']).status, 0)
+    assert.equal(readPlanner(ws2)?.terminalHandle, 'X')
   })
 })
 
@@ -375,87 +389,86 @@ describe('mte install', () => {
     assert.equal(run('ls', 'someone-else').stdout, '')
     assert.equal(run('orca orchestration worker-start --task x', 'planner-1').stdout, '')
   })
-
-  it('opencode plugin throws for a non-planner worker-start, not for ls', async () => {
-    const ws = repo()
-    mte(ws, ['install'])
-    mte(ws, ['planner', 'claim', '--session-id', 'planner-1'])
-    const mod = await import(pathToFileURL(join(ws, '.opencode/plugins/mte-guard/index.js')).href)
-    const hooks: Record<string, (e: unknown) => void> = {}
-    const hook = (name: string, fn: (e: unknown) => void) => {
-      hooks[name] = fn
-    }
-    await mod.default.setup({ directory: ws, tool: { hook }, shell: { hook } })
-    assert.equal(mod.default.id, 'mte-guard')
-    const exec = (command: string, sessionID = 'ses_x') => hooks['execute.before']?.({ tool: 'shell', sessionID, input: { command } })
-    hooks['create.before']?.({ command: 'x', sessionID: 'ses_x', env: { ORCA_AGENT_SESSION_ID: 'someone-else' } })
-    assert.throws(() => exec('orca orchestration worker-start --task x'), /planner/)
-    assert.doesNotThrow(() => exec('ls'))
-    hooks['create.before']?.({ command: 'x', sessionID: 'ses_x', env: { ORCA_AGENT_SESSION_ID: 'planner-1' } })
-    assert.doesNotThrow(() => exec('orca orchestration worker-start --task x'))
-  })
 })
 
-describe('opencode plugin cwd', () => {
-  it('resolves the project dir from ctx.location.directory (execute.before input only has command) and denies', async () => {
+/** Loads the installed plugin and drives it with the REAL opencode 2.3.2 event shapes. */
+async function loadPlugin(ws: string) {
+  const mod = await import(pathToFileURL(join(ws, '.opencode/plugins/mte-guard/index.js')).href)
+  const hooks: Record<string, (e: unknown) => void> = {}
+  const reg = (n: string, f: (e: unknown) => void) => {
+    hooks[n] = f
+  }
+  await mod.default.setup({ location: { directory: ws }, tool: { hook: reg }, shell: { hook: reg } })
+  // one gated shell call: execute.before (has sessionID) fires first, then create.before (no sessionID, has env/cwd)
+  const run = (command: string, sessionID: string, clientEnv: Record<string, string> = {}) => {
+    const shellEvent = { command, cwd: ws, timeout: 120000, shell: '/bin/zsh', env: { PATH: '/usr/bin', ...clientEnv } }
+    hooks['execute.before']?.({ tool: 'shell', sessionID, agent: 'build', messageID: 'msg_1', id: 'call_1', input: { command } })
+    hooks['create.before']?.(shellEvent)
+    return shellEvent
+  }
+  return { mod, run }
+}
+
+const GATED = 'orca orchestration worker-start --task x'
+
+describe('opencode plugin (real 2.3.2 event shapes)', () => {
+  it('allows the claimed planner on its first gated command, denies a second session, ignores unrelated commands', async () => {
     const ws = repo()
     mte(ws, ['install', '--agents', 'opencode'])
-    mte(ws, ['planner', 'claim', '--session-id', 'planner-1'])
-    const mod = await import(pathToFileURL(join(ws, '.opencode/plugins/mte-guard/index.js')).href)
-    const hooks: Record<string, (e: unknown) => void> = {}
-    const hook = (name: string, fn: (e: unknown) => void) => {
-      hooks[name] = fn
-    }
-    // no ctx.directory, no input.cwd; run from a cwd that has no .mte (service cwd) so only ctx.location can find the workspace
+    mte(ws, ['planner', 'claim', '--terminal-handle', 'term_planner'])
+    const { mod, run } = await loadPlugin(ws)
+    assert.equal(mod.default.id, 'mte-guard')
+    // no ctx.directory, no input.cwd; service cwd has no .mte, so only ctx.location can find the workspace
     const prev = process.cwd()
     process.chdir(tmpdir())
     try {
-      await mod.default.setup({ location: { directory: ws }, tool: { hook }, shell: { hook } })
-      hooks['create.before']?.({ command: 'x', sessionID: 'ses_other', env: { ORCA_AGENT_SESSION_ID: 'someone-else' } })
-      const exec = (command: string, sessionID: string) => hooks['execute.before']?.({ tool: 'shell', sessionID, input: { command } })
-      assert.throws(() => exec('orca orchestration worker-start --task x', 'ses_other'), /planner/)
-      assert.throws(() => exec('"$ORCA_CLI_COMMAND" orchestration worker-start --task x', 'ses_other'), /planner/)
+      assert.doesNotThrow(() => run(GATED, 'ses_planner', { ORCA_TERMINAL_HANDLE: 'term_planner' }))
+      assert.throws(() => run(GATED, 'ses_other', { ORCA_TERMINAL_HANDLE: 'term_other' }), /planner/)
+      assert.throws(() => run('"$ORCA_CLI_COMMAND" orchestration worker-start --task x', 'ses_other', { ORCA_TERMINAL_HANDLE: 'term_other' }), /planner/)
+      assert.doesNotThrow(() => run('ls', 'ses_other', { ORCA_TERMINAL_HANDLE: 'term_other' }))
+      assert.doesNotThrow(() => run('orca orchestration inbox', 'ses_other', { ORCA_TERMINAL_HANDLE: 'term_other' }))
+      // an identity-less caller is denied once a planner is claimed
+      assert.throws(() => run(GATED, 'ses_ghost'), /planner/)
     } finally {
       process.chdir(prev)
     }
   })
 
-  it('allows the opencode-claimed planner before any shell create.before event fired', async () => {
+  it('pairs concurrent identical commands from two sessions by consuming stash entries', async () => {
     const ws = repo()
     mte(ws, ['install', '--agents', 'opencode'])
-    mte(ws, ['planner', 'claim', '--terminal-handle', 'term_1', '--opencode-session', 'ses_planner'])
+    mte(ws, ['planner', 'claim', '--terminal-handle', 'term_planner'])
+    const mod = await import(pathToFileURL(join(ws, '.opencode/plugins/mte-guard/index.js')).href)
+    const hooks: Record<string, (e: unknown) => void> = {}
+    await mod.default.setup({ location: { directory: ws }, tool: { hook: (n: string, f: (e: unknown) => void) => (hooks[n] = f) }, shell: { hook: (n: string, f: (e: unknown) => void) => (hooks[n] = f) } })
+    const exec = (sessionID: string) => hooks['execute.before']?.({ tool: 'shell', sessionID, input: { command: GATED } })
+    const create = (handle: string) => hooks['create.before']?.({ command: GATED, cwd: ws, env: { ORCA_TERMINAL_HANDLE: handle } })
+    exec('ses_planner')
+    exec('ses_other') // newest
+    assert.throws(() => create('term_other'), /planner/) // newest entry consumed -> ses_other
+    assert.doesNotThrow(() => create('term_planner')) // remaining entry -> ses_planner
+  })
+
+  it('sets MTE_OPENCODE_SESSION in the shell env for any command so `planner claim` records it', async () => {
+    const ws = repo()
+    mte(ws, ['install', '--agents', 'opencode'])
+    const { run } = await loadPlugin(ws)
+    const ev = run('echo hi', 'ses_abc', { MTE_OPENCODE_SESSION: 'spoofed' })
+    assert.equal((ev.env as Record<string, string>).MTE_OPENCODE_SESSION, 'ses_abc')
+    assert.equal(mte(ws, ['planner', 'claim'], { MTE_OPENCODE_SESSION: (ev.env as Record<string, string>).MTE_OPENCODE_SESSION }).status, 0)
+    assert.equal(readPlanner(ws)?.opencodeSessionId, 'ses_abc')
+  })
+
+  it('without a shell hook it decides in execute.before with the session id', async () => {
+    const ws = repo()
+    mte(ws, ['install', '--agents', 'opencode'])
+    mte(ws, ['planner', 'claim', '--opencode-session', 'ses_planner'])
     const mod = await import(pathToFileURL(join(ws, '.opencode/plugins/mte-guard/index.js')).href)
     const hooks: Record<string, (e: unknown) => void> = {}
     await mod.default.setup({ location: { directory: ws }, tool: { hook: (n: string, f: (e: unknown) => void) => (hooks[n] = f) } })
-    const exec = (sessionID: string) =>
-      hooks['execute.before']?.({ tool: 'shell', sessionID, input: { command: 'orca orchestration worker-start --task x' } })
+    const exec = (sessionID: string) => hooks['execute.before']?.({ tool: 'shell', sessionID, input: { command: GATED } })
     assert.doesNotThrow(() => exec('ses_planner'))
     assert.throws(() => exec('ses_other'), /planner/)
-  })
-})
-
-describe('opencode plugin per-session identity', () => {
-  it('keeps identity per opencode session on one shared service: B is denied even after A populated its own', async () => {
-    const ws = repo()
-    mte(ws, ['install', '--agents', 'opencode'])
-    mte(ws, ['planner', 'claim', '--session-id', 'planner-1'])
-    const mod = await import(pathToFileURL(join(ws, '.opencode/plugins/mte-guard/index.js')).href)
-    const hooks: Record<string, (e: unknown) => void> = {}
-    await mod.default.setup({
-      location: { directory: ws },
-      tool: { hook: (n: string, f: (e: unknown) => void) => (hooks[n] = f) },
-      shell: { hook: (n: string, f: (e: unknown) => void) => (hooks[n] = f) }
-    })
-    const exec = (sessionID: string) =>
-      hooks['execute.before']?.({ tool: 'shell', sessionID, input: { command: 'orca orchestration worker-start --task x' } })
-    // session A (planner) shell starts and populates its identity
-    hooks['create.before']?.({ command: 'x', sessionID: 'ses_A', env: { ORCA_AGENT_SESSION_ID: 'planner-1' } })
-    assert.doesNotThrow(() => exec('ses_A'))
-    // session B: first gated command arrives BEFORE its create.before (and after A's identity exists)
-    assert.throws(() => exec('ses_B'), /planner/)
-    hooks['create.before']?.({ command: 'x', sessionID: 'ses_B', env: { ORCA_AGENT_SESSION_ID: 'worker-9' } })
-    assert.throws(() => exec('ses_B'), /planner/)
-    assert.doesNotThrow(() => exec('ses_A'))
   })
 })
 
