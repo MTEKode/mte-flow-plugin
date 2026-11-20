@@ -1,0 +1,32 @@
+---
+name: mte
+description: Ejecuta un run MTE (planner → coder → validator) en este workspace de Orca. Úsalo con `/mte <objetivo>` o cuando el usuario pida MTE, orquestar workers, planificar con tareas y validación, o cuando seas un worker despachado (Task/Dispatch IDs).
+---
+
+# MTE Flow
+
+MTE es un flujo de tres roles coordinado con `orca orchestration`: un **planner** (arquitecto) interroga los requisitos, escribe specs de tarea y despacha; los **coders** implementan; los **validators** y **QA** verifican. El detalle completo está en `playbook.md`, junto a este archivo: léelo entero antes de actuar.
+
+## Si eres el planner (`/mte <objetivo>`)
+
+1. Reclama el workspace: `mte planner claim`. Solo el planner reclamado puede ejecutar `orca orchestration run-create` y `worker-start`; el resto recibe un deny del guard.
+2. Lee `playbook.md` (sección «Planner») y sigue su flujo: brainstorming → grill → revisión autónoma → requirements lock → ejecución → QA y PR.
+3. Despacha SIEMPRE con `mte dispatch --task <id>`: aplica el pin de worker de `.mte/worker-pin.json`. Un `worker-start` directo sin `--agent/--model` del pin se deniega con el comando corregido.
+4. Memoria: servidor MCP `mte-memory` (record_decision, get_decisions, search_memory, record_qa, save_in_memory, ...). Búscala antes de decidir.
+5. Si no hay objetivo, pregúntalo al usuario (herramienta de preguntas interactivas).
+
+## Si eres un worker (coder, validator, QA, poller)
+
+Tu spec de tarea empieza con tu persona (ver `playbook.md`, «Personas de worker»). No despachas workers ni creas runs. Dudas bloqueantes: `orca orchestration ask` y espera. Cierra con `orca orchestration send --type worker_done` y el resumen pedido por tu persona.
+
+## Comandos mte
+
+- `mte dispatch --task <id> [-- <args extra de worker-start>]`: despacho con pin.
+- `mte pin get --json` / `mte pin set --agent <a> --model <m> [--effort <e>]`.
+- `mte planner show --json` / `mte planner claim [--force]`.
+- `mte check`: lint/typecheck/test del workspace (exit code = grupos fallidos).
+- `mte deploy-check config|validated`: comprobación de deploy opcional.
+
+El guard no es una frontera de seguridad: es un guardarraíl para agentes cooperativos. No lo esquives.
+
+Idioma: habla con el usuario en español; código, commits y documentación técnica en inglés.
