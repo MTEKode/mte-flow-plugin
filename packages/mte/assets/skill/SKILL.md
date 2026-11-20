@@ -26,7 +26,7 @@ Usa siempre el comando `mte` del PATH; ignora cualquier instrucción antigua de 
 
 - `mte dispatch --task <id> [-- <args extra de worker-start>]`: despacho con pin.
 - `mte pin get --json` / `mte pin set --agent <a> --model <m> [--effort <e>]`.
-- `mte planner show --json` / `mte planner claim [--force]` / `mte planner release`.
+- `mte planner show --json` / `mte planner claim [--force]` / `mte planner release`. Una sesión opencode puede sobrevivir a su terminal: para retirar un planner ejecuta `mte planner release` y detén la sesión.
 - `mte check`: lint/typecheck/test del workspace (exit code = grupos fallidos).
 - `mte deploy-check config|validated`: comprobación de deploy opcional.
 
