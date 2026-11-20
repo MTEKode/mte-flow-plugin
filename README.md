@@ -41,9 +41,10 @@ Tests: `cd packages/mte && npm test` (or `node --test 'packages/mte/**/*.test.ts
 - **Commands**: `MTE: Start run` and `MTE: Open panel` (both open the panel), `MTE: Install in workspace`.
 - **Status bar**: `MTE <n>` active workers, polled every 15 s; click opens the panel.
 - **Settings**: `plannerAgent`, `plannerModel`, `workerAgent`, `workerModel`, `workerEffort` (ignored for opencode), `mteBin` (default `mte`).
-- **Start run (terminal planner)**: runs `mte install --agents ...` and `mte pin set ...` in the workspace path, then `agent.launch` with the prompt `/mte <goal>` (goal truncated with a marker to stay under the 4096-char host cap). A native-chat planner is started by typing `/mte <goal>` in the chat.
+- **Start run (terminal planner)**: re-reads the focused workspace at press time (refused when it is the home directory or not a git repo), runs `mte install --agents claude,opencode` (both agents, always) and `mte pin set ...` in its path, then launches the planner with the prompt `/mte-flow <goal>` through `orca agent launch --surface terminal --prompt` (goal truncated with a marker to stay under the 4096-char cap). The host `agent.launch` is only a fallback when the CLI is missing: it sends the prompt in a second, fire-and-forget call that failed silently in QA. A native-chat planner is started by typing `/mte-flow <goal>` in the chat.
+- **Which Orca**: the worker's env has no `ORCA_*`, so the plugin derives the hosting app's CLI from `process.execPath` (`<app>/Contents/Resources/bin/orca` on macOS, `resources/bin/orca-ide` on Linux, `resources/bin/orca.exe` on Windows) and the profile from its own install path (`<userData>/plugins/<key>/<hash>/`), and runs the CLI with `ORCA_USER_DATA_PATH` set. A dev-linked plugin has no userData in its path and uses the bundle's default profile.
 - Requires the `mte` CLI: `npm i -g @mtekode/mte` (the panel shows this when it is missing).
-- `plannerModel` is advisory: `agent.launch` cannot select a model. An empty `workerModel` skips `mte pin set`.
+- `plannerModel` is passed to the planner launch (`--model`); empty means the agent's default. An empty `workerModel` skips `mte pin set`.
 
 Develop and test (from `plugin/`; none of these install into your Orca profile):
 

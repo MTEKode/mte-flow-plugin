@@ -9,6 +9,7 @@ import {
   listOrchestration,
   openPanel,
   readSettings,
+  resolveOrcaCli,
   resolveWorkspace,
   startRun,
   statusText
@@ -25,7 +26,7 @@ export default async function activate(orca) {
     settings: async () =>
       Object.fromEntries(await Promise.all(SETTING_KEYS.map(async (k) => [k, await orca.settings.get(k)])))
   }
-  const deps = { exec: defaultExec, host }
+  const deps = { exec: defaultExec, host, orcaCli: resolveOrcaCli() }
 
   async function refreshStatus() {
     const { workers, error } = await listOrchestration(deps)
