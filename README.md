@@ -4,7 +4,13 @@ MTE Flow for stock Orca: `mte` Node package, Claude/opencode adapters, and the `
 
 ## mte package
 
-`packages/mte` is the `@mtekode/mte` engine (bin `mte`): ESM, Node >= 24, TypeScript run directly via Node type stripping (no build step), zero runtime dependencies. Run from a checkout (`node packages/mte/src/cli.ts <cmd>` or `npm link` inside `packages/mte`); a copy installed under `node_modules` cannot be executed, because Node refuses to strip types there.
+`packages/mte` is the `@mtekode/mte` engine (bin `mte`): ESM, Node >= 24, zero runtime dependencies. Sources are TypeScript run directly via Node type stripping (`npm test` runs them as is); `npm pack` (via `prepack`) emits plain JS into `dist/` with `scripts/build.mjs`, because Node refuses to strip types under `node_modules`. Not published to the npm registry; install the tarball attached to the GitHub release:
+
+```sh
+npm i -g https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v0.1.0/mtekode-mte-0.1.0.tgz
+```
+
+Development alternative: clone this repo, then `cd packages/mte && npm run build && npm link` (or run `node packages/mte/src/cli.ts <cmd>` straight from the sources).
 
 | Command | What it does |
 | --- | --- |
@@ -44,7 +50,7 @@ Tests: `cd packages/mte && npm test` (or `node --test 'packages/mte/**/*.test.ts
 - **Settings**: `plannerAgent`, `plannerModel`, `workerAgent`, `workerModel`, `workerEffort` (ignored for opencode), `mteBin` (default `mte`).
 - **Start run (terminal planner)**: re-reads the focused workspace at press time (refused when it is the home directory or not a git repo), runs `mte planner show --json` first (a live claim stops the run: the panel names the holder and offers a **Replace planner** button), then `mte install --agents claude,opencode` (both agents, always), `mte pin set ...` and, only when replacing, `mte planner release` in its path, then launches the planner with the prompt `/mte-flow <goal>` through `orca agent launch --surface terminal --prompt` (goal truncated with a marker to stay under the 4096-char cap). The host `agent.launch` is only a fallback when the CLI is missing: it sends the prompt in a second, fire-and-forget call that failed silently in QA. A native-chat planner is started by typing `/mte-flow <goal>` in the chat.
 - **Which Orca**: the worker's env has no `ORCA_*`, so the plugin derives the hosting app's CLI from `process.execPath` (`<app>/Contents/Resources/bin/orca` on macOS, `resources/bin/orca-ide` on Linux, `resources/bin/orca.exe` on Windows) and the profile from its own install path (`<userData>/plugins/<key>/<hash>/`), and runs the CLI with `ORCA_USER_DATA_PATH` set. A dev-linked plugin has no userData in its path and uses the bundle's default profile.
-- Requires the `mte` CLI from a checkout (a global npm install cannot run, Node refuses to strip types under `node_modules`): clone this repo, then `cd packages/mte && npm link`. The panel shows this when `mte` is missing or `mte --version` exits non-zero.
+- Requires the `mte` CLI: `npm i -g https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v0.1.0/mtekode-mte-0.1.0.tgz` (dev alternative: clone this repo, then `cd packages/mte && npm run build && npm link`). The panel shows this when `mte` is missing or `mte --version` exits non-zero.
 - `plannerModel` is passed to the planner launch (`--model`); empty means the agent's default. An empty `workerModel` skips `mte pin set`.
 
 Develop and test (from `plugin/`; none of these install into your Orca profile):

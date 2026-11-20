@@ -42,11 +42,11 @@ test('with mte present there is no error and workers get a Focus button', async 
 
 test('an unusable mte shows its own title and the stderr line', async () => {
   const host = mockHost({
-    requests: { 'state.get': { ...base, mte: { missing: true, unusable: true, message: '`mte --version` failed: ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING. Install it: clone, npm link.' } } }
+    requests: { 'state.get': { ...base, mte: { missing: true, unusable: true, message: '`mte --version` failed: ENOENT. Install it: npm i -g https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v0.1.0/mtekode-mte-0.1.0.tgz.' } } }
   })
   const view = await mount(panel, { host })
   assert.ok(view.find({ text: /mte binary not usable/ }))
-  assert.ok(view.find({ text: /ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING/ }))
+  assert.ok(view.find({ text: /ENOENT/ }))
   await view.unmount()
 })
 

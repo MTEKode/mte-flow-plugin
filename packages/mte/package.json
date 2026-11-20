@@ -5,18 +5,19 @@
   "type": "module",
   "license": "MIT",
   "bin": {
-    "mte": "src/cli.ts"
+    "mte": "dist/cli.js"
   },
   "engines": {
     "node": ">=24"
   },
   "files": [
-    "src",
+    "dist",
     "assets",
-    "!src/**/*.test.ts",
-    "!src/test-support"
+    "README.md"
   ],
   "scripts": {
+    "build": "node --disable-warning=ExperimentalWarning scripts/build.mjs",
+    "prepack": "npm run build",
     "test": "node --test"
   }
 }

@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 export const PROMPT_MAX = 4000
 export const TRUNCATION_MARKER = '\n[goal truncated]'
 export const INSTALL_HINT =
-  'git clone https://github.com/MTEKode/mte-flow-plugin, then `cd mte-flow-plugin/packages/mte && npm link` (Node >= 24)'
+  'npm i -g https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v0.1.0/mtekode-mte-0.1.0.tgz (Node >= 24; from a checkout: cd packages/mte && npm link)'
 
 /** `/mte-flow <goal>`, with the goal cut (and marked) so the whole prompt fits the host cap. */
 export function buildBootstrapPrompt(goal) {

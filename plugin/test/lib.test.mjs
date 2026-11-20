@@ -174,8 +174,8 @@ test('missing mte binary yields the mte_missing error with install instructions'
   for (const result of [await startRun(deps, { goal: 'x' }), await installInWorkspace(deps)]) {
     assert.equal(result.ok, false)
     assert.equal(result.error.code, 'mte_missing')
-    assert.match(result.error.message, /npm link/)
-    assert.doesNotMatch(result.error.message, /npm i\s+-g/)
+    assert.match(result.error.message, /npm i -g https:\/\/github\.com\/MTEKode\/mte-flow-plugin\/releases\/download\/mte-v0\.1\.0\/mtekode-mte-0\.1\.0\.tgz/)
+    assert.doesNotMatch(result.error.message, /@mtekode\/mte/)
   }
   assert.ok(!calls.some((c) => c.args?.[0] === 'agent' || c.method === 'agent.launch'))
   assert.deepEqual(await checkMte(deps, { mteBin: 'mte' }).then((r) => r.missing), true)
