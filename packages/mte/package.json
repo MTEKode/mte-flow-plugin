@@ -1,0 +1,21 @@
+{
+  "name": "@mtekode/mte",
+  "version": "0.1.0",
+  "description": "MTE Flow engine: memory MCP server, check runner and deploy-check.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "mte": "src/cli.ts"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "files": [
+    "src",
+    "!src/**/*.test.ts",
+    "!src/test-support"
+  ],
+  "scripts": {
+    "test": "node --test"
+  }
+}
