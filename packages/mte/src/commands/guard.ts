@@ -1,18 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { evaluateCommand } from '../wiring/guard-logic.ts'
-import { identityFromEnv, logGuard, withIdentity } from '../wiring/state.ts'
-import type { Identity } from '../wiring/state.ts'
-import { resolveWorkspaceRoot, usageError } from './flags.ts'
+import { logGuard } from '../wiring/state.ts'
+import { callerIdentity, resolveWorkspaceRoot, usageError } from './flags.ts'
 import type { Command, Flags } from './flags.ts'
-
-function callerIdentity(flags: Flags): Identity {
-  const session = flags.get('session-id')
-  const handle = flags.get('terminal-handle')
-  if (typeof session === 'string' || typeof handle === 'string') {
-    return withIdentity(typeof session === 'string' ? session : undefined, typeof handle === 'string' ? handle : undefined)
-  }
-  return identityFromEnv(process.env)
-}
 
 function claudeDeny(reason: string): string {
   return JSON.stringify({
@@ -25,7 +15,7 @@ function claudeDeny(reason: string): string {
 }
 
 /**
- * `mte guard --command <cmd> [--session-id id] [--terminal-handle h] [--workspace p]` (exit 2 = deny, reason on stderr)
+ * `mte guard --command <cmd> [--session-id id] [--terminal-handle h] [--opencode-session id] [--workspace p]` (exit 2 = deny, reason on stderr)
  * or `mte guard --claude-hook` (PreToolUse JSON on stdin, deny JSON on stdout, always exit 0).
  * Internal errors fail OPEN (logged to .mte/guard.log): the guard must never brick an agent's shell.
  */

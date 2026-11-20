@@ -1,5 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
+import { identityFromEnv, withIdentity } from '../wiring/state.ts'
+import type { Identity } from '../wiring/state.ts'
 import { realMemoryWorkspacePath, resolveMemoryWorkspaceRoot } from '../memory/memory-workspace-root.ts'
 
 export type Flags = Map<string, string | boolean>
@@ -38,4 +40,14 @@ export function resolveWorkspaceRoot(flags: Flags, cwd: string): string | { erro
       ? resolve(cwd, flag)
       : (gitToplevel(cwd) ?? resolveMemoryWorkspaceRoot(cwd))
   return realMemoryWorkspacePath(root)
+}
+
+/** Identity from --session-id/--terminal-handle/--opencode-session when any is given, else from the environment. */
+export function callerIdentity(flags: Flags): Identity {
+  const [session, handle, opencode] = ['session-id', 'terminal-handle', 'opencode-session'].map((name) => {
+    const value = flags.get(name)
+    return typeof value === 'string' ? value : undefined
+  })
+  const given = withIdentity(session, handle, opencode)
+  return Object.keys(given).length > 0 ? given : identityFromEnv(process.env)
 }

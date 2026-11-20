@@ -14,7 +14,7 @@ Sustituye `<tema>` por uno conciso derivado del objetivo (≤8 palabras): úsalo
 
 1. Reclama el workspace con `mte planner claim` (primer claim gana; `--force` reemplaza). Sin claim, el guard deniega `run-create` y `worker-start` a cualquier otro.
 2. Los workers de esta sesión los fija el pin de `.mte/worker-pin.json` (`mte pin get --json`). Nunca preguntes qué agente ejecuta los workers. Si no hay pin, pregunta UNA vez (agente y modelo ligero) y guárdalo con `mte pin set --agent <a> --model <m> [--effort <e>]`. Para `opencode` nunca se usa `--effort`.
-3. Si `/mte` no trae objetivo, pregúntalo al usuario y haz sobre él la entrevista de requisitos.
+3. Si `/mte-flow` no trae objetivo, pregúntalo al usuario y haz sobre él la entrevista de requisitos.
 
 ### Flujo del run
 
