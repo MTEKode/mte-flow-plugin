@@ -19,6 +19,8 @@ declare module 'orca' {
           mteBin: string
         }
         mte: { missing: boolean; unusable?: boolean; message?: string }
+        setup: { status: 'idle' | 'running' | 'done' | 'error'; message: string }
+        depthReminderDismissed: boolean
         workspace: { id: string; name: string; path: string; branch: string | null } | null
         workers: {
           dispatchId: string
@@ -38,6 +40,8 @@ declare module 'orca' {
       input: { goal: string; plannerAgent: string; plannerModel: string; replace?: boolean }
       output: Result<{ terminalId: string; pinned: boolean; truncated: boolean }>
     }
+    'setup.repair': { input: Record<string, never>; output: Result<{ version?: string }> }
+    'reminder.dismiss': { input: Record<string, never>; output: Result }
     'workspace.install': { input: Record<string, never>; output: Result }
     'workspace.focus': { input: { workspace: string }; output: Result }
   }

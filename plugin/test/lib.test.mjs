@@ -3,6 +3,12 @@ import test from 'node:test'
 import {
   buildBootstrapPrompt,
   checkMte,
+  compareVersions,
+  dismissDepthReminder,
+  ensureSetup,
+  isDepthReminderDismissed,
+  REQUIRED_MTE_VERSION,
+  tarballUrl,
   installInWorkspace,
   listOrchestration,
   resolveOrcaCli,
@@ -174,7 +180,7 @@ test('missing mte binary yields the mte_missing error with install instructions'
   for (const result of [await startRun(deps, { goal: 'x' }), await installInWorkspace(deps)]) {
     assert.equal(result.ok, false)
     assert.equal(result.error.code, 'mte_missing')
-    assert.match(result.error.message, /npm i -g https:\/\/github\.com\/MTEKode\/mte-flow-plugin\/releases\/download\/mte-v0\.2\.0\/mtekode-mte-0\.2\.0\.tgz/)
+    assert.match(result.error.message, /npm i -g https:\/\/github\.com\/MTEKode\/mte-flow-plugin\/releases\/download\/mte-v0\.3\.0\/mtekode-mte-0\.3\.0\.tgz/)
     assert.doesNotMatch(result.error.message, /@mtekode\/mte/)
   }
   assert.ok(!calls.some((c) => c.args?.[0] === 'agent' || c.method === 'agent.launch'))
@@ -310,5 +316,128 @@ test('checkMte: a non-zero --version exit is unusable, with the stderr first lin
   assert.equal(res.unusable, true)
   assert.match(res.message, /ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING/)
   assert.doesNotMatch(res.message, /more/)
-  assert.deepEqual(await checkMte({ exec: async () => ({ code: 0, stdout: '0.2.0', stderr: '' }) }, { mteBin: 'mte' }), { missing: false })
+  assert.deepEqual(await checkMte({ exec: async () => ({ code: 0, stdout: '0.3.0', stderr: '' }) }, { mteBin: 'mte' }), { missing: false })
+})
+
+// ---- first-run setup ----
+
+const TARBALL = 'https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v0.3.0/mtekode-mte-0.3.0.tgz'
+
+/** In-memory plugin storage plus an exec stub driven by `env` ({ mte, node, npm, npmInstall }); records every call. */
+function setupStubs({ mte = null, node = 'v24.14.0', npm = '10.9.0', npmInstall = { code: 0 }, userInstall = { code: 0 }, storage = new Map() } = {}) {
+  const calls = []
+  let mteVersion = mte
+  const deps = {
+    storage: { get: async (k) => storage.get(k) ?? null, set: async (k, v) => void storage.set(k, v) },
+    host: { settings: async () => ({}) },
+    progress: (m) => calls.push({ progress: m }),
+    exec: async (file, args) => {
+      calls.push({ file, args })
+      const enoent = () => Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })
+      if (file === 'mte' && args[0] === '--version') {
+        if (mteVersion === null) throw enoent()
+        return { code: 0, stdout: `${mteVersion}\n`, stderr: '' }
+      }
+      if (file === 'mte' && args[0] === 'install') return { code: 0, stderr: '', stdout: '', ...userInstall }
+      if (file === 'node') {
+        if (node === null) throw enoent()
+        return { code: 0, stdout: `${node}\n`, stderr: '' }
+      }
+      if (file === 'npm' && args[0] === '--version') {
+        if (npm === null) throw enoent()
+        return { code: 0, stdout: `${npm}\n`, stderr: '' }
+      }
+      if (file === 'npm') {
+        const res = { code: 0, stdout: '', stderr: '', ...npmInstall }
+        if (res.code === 0) mteVersion = REQUIRED_MTE_VERSION
+        return res
+      }
+      throw new Error(`unexpected exec ${file}`)
+    }
+  }
+  return { deps, calls, storage }
+}
+const npmInstalls = (calls) => calls.filter((c) => c.file === 'npm' && c.args?.[0] === 'i')
+
+test('REQUIRED_MTE_VERSION and tarball URL', () => {
+  assert.equal(REQUIRED_MTE_VERSION, '0.3.0')
+  assert.equal(tarballUrl('0.3.0'), TARBALL)
+  assert.ok(compareVersions('0.2.0', '0.3.0') < 0 && compareVersions('0.3.0', '0.3.0') === 0 && compareVersions('0.10.0', '0.3.0') > 0)
+})
+
+test('setup: mte missing -> npm i -g <exact tarball>, then mte install --user, then remembered', async () => {
+  const { deps, calls, storage } = setupStubs({ mte: null })
+  const res = await ensureSetup(deps)
+  assert.deepEqual([res.ok, res.installed], [true, true])
+  assert.deepEqual(npmInstalls(calls).map((c) => c.args), [['i', '-g', TARBALL]])
+  assert.deepEqual(calls.filter((c) => c.args?.[0] === 'install').map((c) => c.args), [['install', '--user']])
+  assert.ok(storage.has('setup:0.3.0'))
+  assert.ok(calls.some((c) => c.progress))
+})
+
+test('setup: older mte -> same install; current mte -> no npm install but still installs the user skill', async () => {
+  const old = setupStubs({ mte: '0.2.0' })
+  assert.equal((await ensureSetup(old.deps)).installed, true)
+  assert.deepEqual(npmInstalls(old.calls).map((c) => c.args), [['i', '-g', TARBALL]])
+
+  const current = setupStubs({ mte: '0.3.0' })
+  const res = await ensureSetup(current.deps)
+  assert.deepEqual([res.ok, res.installed], [true, false])
+  assert.equal(npmInstalls(current.calls).length, 0)
+  assert.ok(current.calls.some((c) => c.args?.join(' ') === 'install --user'))
+})
+
+test('setup: node < 24, node missing or npm missing -> error and no npm install', async () => {
+  for (const [opts, code] of [[{ node: 'v22.11.0' }, 'node_old'], [{ node: null }, 'node_missing'], [{ npm: null }, 'npm_missing']]) {
+    const { deps, calls, storage } = setupStubs({ mte: null, ...opts })
+    const res = await ensureSetup(deps)
+    assert.equal(res.ok, false)
+    assert.equal(res.error.code, code)
+    assert.match(res.error.message, /Node|npm/)
+    assert.equal(npmInstalls(calls).length, 0)
+    assert.equal(storage.size, 0)
+  }
+})
+
+test('setup: a failing npm surfaces its error text, mentions no sudo retry and is not remembered', async () => {
+  const { deps, calls, storage } = setupStubs({ mte: null, npmInstall: { code: 243, stderr: 'npm error code EACCES\nnpm error path /usr/local/lib' } })
+  const res = await ensureSetup(deps)
+  assert.equal(res.error.code, 'npm_failed')
+  assert.match(res.error.message, /EACCES/)
+  assert.match(res.error.message, /never use sudo/)
+  assert.equal(npmInstalls(calls).length, 1)
+  assert.ok(calls.every((c) => c.file !== 'sudo'))
+  assert.equal(storage.size, 0)
+})
+
+test('setup runs once per mte version; force (Repair setup) runs it again', async () => {
+  const { deps, calls } = setupStubs({ mte: null })
+  assert.equal((await ensureSetup(deps)).ok, true)
+  const after = calls.length
+  const again = await ensureSetup(deps)
+  assert.deepEqual([again.ok, again.skipped], [true, true])
+  assert.equal(calls.length, after, 'no exec on the second activation')
+  const forced = await ensureSetup(deps, { force: true })
+  assert.equal(forced.skipped, undefined)
+  assert.ok(calls.length > after)
+  // a different stored version does not count
+  const other = setupStubs({ mte: '0.3.0', storage: new Map([['setup:0.2.0', { at: 'x' }]]) })
+  assert.equal((await ensureSetup(other.deps)).skipped, undefined)
+})
+
+test('depth reminder dismissal is stored', async () => {
+  const storage = new Map()
+  const api = { get: async (k) => storage.get(k) ?? null, set: async (k, v) => void storage.set(k, v) }
+  assert.equal(await isDepthReminderDismissed(api), false)
+  await dismissDepthReminder(api)
+  assert.equal(await isDepthReminderDismissed(api), true)
+})
+
+test('manifest defaults: claude planner, claude worker, sonnet model, no effort; storage declared', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const manifest = JSON.parse(await readFile(new URL('../orca-plugin.json', import.meta.url), 'utf8'))
+  const defaults = Object.fromEntries(manifest.contributes.settings.map((s) => [s.key, s.default]))
+  assert.deepEqual([defaults.plannerAgent, defaults.workerAgent, defaults.workerModel, defaults.workerEffort], ['claude', 'claude', 'sonnet', ''])
+  assert.ok(manifest.capabilities.some((c) => c.kind === 'storage:own'))
+  assert.equal(manifest.version, '0.2.0')
 })

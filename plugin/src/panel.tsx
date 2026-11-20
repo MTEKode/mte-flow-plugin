@@ -97,6 +97,11 @@ const startRun = (replace = false) =>
       `Planner started in a new terminal${r.truncated ? ' (goal truncated to fit the 4096-char prompt cap)' : ''}.`
   )
 
+const repair = () =>
+  act('repair', () => plugin.request('setup.repair', {}), () => 'Setup finished: mte and the mte-flow skill are ready.')
+
+const dismissReminder = () => act('dismiss', () => plugin.request('reminder.dismiss', {}), () => 'Reminder dismissed.')
+
 const install = () => act('install', () => plugin.request('workspace.install', {}), () => 'MTE installed in this workspace.')
 
 const focus = (workspace: string) =>
@@ -135,6 +140,37 @@ export default function Panel() {
       {loadErr ? (
         <Callout tone="danger" title="Could not reach the MTE worker">
           {loadErr}
+        </Callout>
+      ) : null}
+      {snap?.setup.status === 'running' ? (
+        <Callout tone="accent" title="Setting up MTE">
+          {snap.setup.message}
+        </Callout>
+      ) : null}
+      {snap?.setup.status === 'error' ? (
+        <Callout tone="danger" title="MTE setup failed">
+          <Stack gap="xs">
+            <Text size="sm">{snap.setup.message}</Text>
+            <Row>
+              <Button variant="outline" disabled={working !== null} onPress={() => void repair()}>
+                Repair setup
+              </Button>
+            </Row>
+          </Stack>
+        </Callout>
+      ) : null}
+      {snap && !snap.depthReminderDismissed ? (
+        <Callout tone="warning" title="One manual setting">
+          <Stack gap="xs">
+            <Text size="sm">
+              Set Settings → Orchestration → Nested worker depth = 1 so dispatched workers cannot start workers.
+            </Text>
+            <Row>
+              <Button variant="outline" disabled={working !== null} onPress={() => void dismissReminder()}>
+                Dismiss
+              </Button>
+            </Row>
+          </Stack>
         </Callout>
       ) : null}
       {snap?.mte.missing ? (
@@ -202,6 +238,9 @@ export default function Panel() {
             onPress={() => void install()}
           >
             Install MTE in this workspace
+          </Button>
+          <Button variant="outline" icon="wrench" disabled={working !== null} onPress={() => void repair()}>
+            {working === 'repair' ? 'Repairing…' : 'Repair setup'}
           </Button>
         </Row>
         <Text muted size="xs">

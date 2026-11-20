@@ -31,7 +31,7 @@ export const COMMANDS: Record<string, Command> = {
 }
 
 /** Flags that never take a value, so `--json config` does not swallow the next token. */
-export const BOOLEAN_FLAGS: Set<string> = new Set(['json', 'failed', 'detect', 'help', 'version', 'force', 'claude-hook'])
+export const BOOLEAN_FLAGS: Set<string> = new Set(['json', 'failed', 'detect', 'help', 'version', 'force', 'claude-hook', 'user'])
 
 const HELP = `mte - MTE Flow engine
 
@@ -46,6 +46,7 @@ Usage:
   mte planner claim [--force] [--session-id <id>] [--terminal-handle <h>] | mte planner show --json
   mte planner release [--workspace <path>]                                drop the planner claim (next claim needs no --force)
   mte install [--agents claude,opencode] [--workspace <path>]             wire skill, hook/plugin and memory MCP
+  mte install --user [--agents claude,opencode]                           install the mte-flow skill in ~/.claude/skills and ~/.agents/skills
   mte --version | mte help
 `
 

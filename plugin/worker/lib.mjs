@@ -9,8 +9,12 @@ import { fileURLToPath } from 'node:url'
 // agent.launch and workspace.create cap prompts at 4096 chars; stay well under it.
 export const PROMPT_MAX = 4000
 export const TRUNCATION_MARKER = '\n[goal truncated]'
-export const INSTALL_HINT =
-  'npm i -g https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v0.2.0/mtekode-mte-0.2.0.tgz (Node >= 24; from a checkout: cd packages/mte && npm link)'
+/** The mte CLI version this plugin release is built for; the setup installs it when `mte` is missing or older. */
+export const REQUIRED_MTE_VERSION = '0.3.0'
+export const MIN_NODE_MAJOR = 24
+export const tarballUrl = (version) =>
+  `https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v${version}/mtekode-mte-${version}.tgz`
+export const INSTALL_HINT = `npm i -g ${tarballUrl(REQUIRED_MTE_VERSION)} (Node >= ${MIN_NODE_MAJOR}; from a checkout: cd packages/mte && npm link)`
 
 /** `/mte-flow <goal>`, with the goal cut (and marked) so the whole prompt fits the host cap. */
 export function buildBootstrapPrompt(goal) {
@@ -412,3 +416,90 @@ export const statusText = (workers) => {
   const n = workers.filter((w) => w.active).length
   return { n, text: n > 0 ? `MTE ${n}` : 'MTE', tone: n > 0 ? 'accent' : 'neutral' }
 }
+
+/** Numeric `x.y.z` of a version string (`mte --version` prints just that); null when it is not one. */
+export function parseVersion(text) {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(String(text ?? ''))
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null
+}
+
+/** <0, 0, >0 like a comparator; compares parsed `x.y.z` triples. */
+export function compareVersions(a, b) {
+  const [pa, pb] = [parseVersion(a), parseVersion(b)]
+  for (let i = 0; i < 3; i++) {
+    const d = (pa?.[i] ?? 0) - (pb?.[i] ?? 0)
+    if (d) {
+      return d
+    }
+  }
+  return 0
+}
+
+const setupKey = (version) => `setup:${version}`
+const DEPTH_REMINDER_KEY = 'depthReminderDismissed'
+
+/** Runs `file args`; ENOENT comes back as `{ missing: true }` instead of throwing. */
+async function tryExec(deps, file, args, opts) {
+  try {
+    return await deps.exec(file, args, opts)
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return { missing: true, code: 127, stdout: '', stderr: '' }
+    }
+    throw error
+  }
+}
+
+const firstLine = (res) => ((res.stderr || res.stdout || '').trim().split('\n')[0] ?? '').slice(0, 300)
+
+/**
+ * First-run setup: make sure `mte` >= REQUIRED_MTE_VERSION exists (installing the release tarball with the user's
+ * own npm, never sudo), then `mte install --user` for the user-level skill. Remembered per mte version in plugin
+ * storage; `force` (the Repair setup button) ignores that memory. `deps.progress(text)` reports each step.
+ */
+export async function ensureSetup(deps, { force = false } = {}) {
+  const required = REQUIRED_MTE_VERSION
+  const progress = (text) => deps.progress?.(text)
+  if (!force && (await deps.storage.get(setupKey(required)))) {
+    return { ok: true, skipped: true, version: required }
+  }
+  const settings = await readSettings(deps.host)
+  progress('Checking the mte CLI…')
+  let current = await tryExec(deps, settings.mteBin, ['--version'], { timeoutMs: 15_000 })
+  let installed = false
+  if (current.missing || current.code !== 0 || compareVersions(current.stdout, required) < 0) {
+    const node = await tryExec(deps, 'node', ['--version'], { timeoutMs: 15_000 })
+    const major = parseVersion(node.stdout)?.[0]
+    if (node.missing || node.code !== 0 || major === undefined) {
+      return fail('setup', 'node_missing', `Node.js >= ${MIN_NODE_MAJOR} and npm are required to install mte, but \`node\` was not found on PATH. Install Node ${MIN_NODE_MAJOR} or newer from https://nodejs.org, then press Repair setup.`)
+    }
+    if (major < MIN_NODE_MAJOR) {
+      return fail('setup', 'node_old', `Node ${node.stdout.trim()} is too old: mte needs Node >= ${MIN_NODE_MAJOR}. Upgrade Node (https://nodejs.org), then press Repair setup.`)
+    }
+    const npm = await tryExec(deps, 'npm', ['--version'], { timeoutMs: 15_000 })
+    if (npm.missing || npm.code !== 0) {
+      return fail('setup', 'npm_missing', `\`npm\` was not found on PATH. Install it with Node, then run \`npm i -g ${tarballUrl(required)}\` yourself or press Repair setup.`)
+    }
+    progress(`Installing mte ${required} with npm…`)
+    const res = await tryExec(deps, 'npm', ['i', '-g', tarballUrl(required)], { timeoutMs: 300_000 })
+    if (res.code !== 0) {
+      const detail = (res.stderr || res.stdout || '').trim().slice(0, 600)
+      return fail('setup', 'npm_failed', `\`npm i -g\` failed${detail ? `: ${detail}` : ''}. If it is a permissions error, point npm's global prefix at a folder you own (\`npm config set prefix ~/.npm-global\` and add its bin to PATH); never use sudo.`)
+    }
+    current = await tryExec(deps, settings.mteBin, ['--version'], { timeoutMs: 15_000 })
+    if (current.missing || current.code !== 0 || compareVersions(current.stdout, required) < 0) {
+      return fail('setup', 'mte_not_on_path', `mte ${required} was installed but \`${settings.mteBin} --version\` still fails${current.missing ? ' (not on PATH: add npm\'s global bin folder, see `npm bin -g`, to PATH)' : `: ${firstLine(current)}`}.`)
+    }
+    installed = true
+  }
+  progress('Installing the mte-flow skill…')
+  const skill = await tryExec(deps, settings.mteBin, ['install', '--user'], { timeoutMs: 30_000 })
+  if (skill.code !== 0) {
+    return fail('setup', 'user_install_failed', `\`mte install --user\` failed${firstLine(skill) ? `: ${firstLine(skill)}` : ''}.`)
+  }
+  await deps.storage.set(setupKey(required), { at: new Date().toISOString() })
+  return { ok: true, version: required, installed }
+}
+
+export const isDepthReminderDismissed = async (storage) => Boolean(await storage.get(DEPTH_REMINDER_KEY))
+export const dismissDepthReminder = (storage) => storage.set(DEPTH_REMINDER_KEY, true)

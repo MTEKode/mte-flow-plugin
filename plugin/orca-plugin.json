@@ -3,7 +3,7 @@
   "execution": "trusted-worker",
   "id": "mte-flow",
   "name": "MTE Flow",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Start and watch MTE Flow runs on stock Orca: install MTE in a workspace, pin the worker agent, launch the planner and follow runs and workers.",
   "engines": {
     "orca": ">=1.4.248"
@@ -66,8 +66,8 @@
         "title": "Worker model",
         "description": "Pinned with `mte pin set`. Leave empty to skip the pin.",
         "type": "string",
-        "placeholder": "e.g. claude-sonnet-5-5",
-        "default": ""
+        "placeholder": "e.g. sonnet",
+        "default": "sonnet"
       },
       {
         "key": "workerEffort",
@@ -80,7 +80,7 @@
       {
         "key": "mteBin",
         "title": "mte binary",
-        "description": "Command or absolute path of the MTE CLI. Install it with `npm i -g https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v0.2.0/mtekode-mte-0.2.0.tgz`; from a checkout of https://github.com/MTEKode/mte-flow-plugin use `cd packages/mte && npm link`.",
+        "description": "Command or absolute path of the MTE CLI. Install it with `npm i -g https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v0.3.0/mtekode-mte-0.3.0.tgz`; from a checkout of https://github.com/MTEKode/mte-flow-plugin use `cd packages/mte && npm link`.",
         "type": "string",
         "default": "mte"
       }
@@ -88,6 +88,7 @@
   },
   "capabilities": [
     { "kind": "settings:own" },
+    { "kind": "storage:own" },
     { "kind": "workspace:read" },
     { "kind": "workspace:write" },
     { "kind": "agent:read" },
