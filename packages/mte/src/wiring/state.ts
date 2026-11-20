@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 /** Who is calling: Orca session id (native chat), terminal handle (terminal agents) and/or opencode session id. */
@@ -67,14 +67,28 @@ export function describeIdentity(identity: Identity): string {
 const pinPath = (ws: string): string => join(ws, MTE_DIR, 'worker-pin.json')
 const legacyPlannerPath = (ws: string): string => join(ws, MTE_DIR, 'planner.json')
 
+/** Absolute `git rev-parse --git-common-dir` of `ws` (shared by every worktree of a repo), or null outside git. */
+export function gitCommonDir(ws: string): string | null {
+  const res = spawnSync('git', ['rev-parse', '--git-common-dir'], { cwd: ws, encoding: 'utf8' })
+  const dir = res.status === 0 ? res.stdout.trim() : ''
+  if (dir === '') {
+    return null
+  }
+  const abs = resolve(ws, dir)
+  try {
+    return realpathSync(abs)
+  } catch {
+    return abs
+  }
+}
+
 /**
  * The planner claim is shared by every worktree of a repo: `<git-common-dir>/mte/planner.json` (inside `.git`, never
  * committed). A workspace that is not a git checkout keeps the claim in its own `.mte/`.
  */
 function plannerPath(ws: string): string {
-  const res = spawnSync('git', ['rev-parse', '--git-common-dir'], { cwd: ws, encoding: 'utf8' })
-  const dir = res.status === 0 ? res.stdout.trim() : ''
-  return dir === '' ? legacyPlannerPath(ws) : join(resolve(ws, dir), 'mte', 'planner.json')
+  const dir = gitCommonDir(ws)
+  return dir === null ? legacyPlannerPath(ws) : join(dir, 'mte', 'planner.json')
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -35,9 +35,9 @@ function resultError(result: MemoryToolResult): string {
 }
 
 describe('MEMORY_TOOLS definitions', () => {
-  it('exposes exactly nine uniquely named object tools', () => {
-    expect(MEMORY_TOOLS).toHaveLength(9)
-    expect(new Set(MEMORY_TOOLS.map((tool) => tool.name)).size).toBe(9)
+  it('exposes exactly twelve uniquely named object tools', () => {
+    expect(MEMORY_TOOLS).toHaveLength(12)
+    expect(new Set(MEMORY_TOOLS.map((tool) => tool.name)).size).toBe(12)
     for (const tool of MEMORY_TOOLS) {
       expect(tool.input_schema.type).toBe('object')
       for (const field of tool.input_schema.required) {
@@ -55,7 +55,10 @@ describe('MEMORY_TOOLS definitions', () => {
       'search_memory',
       'answer_orq',
       'get_pending_questions',
-      'save_in_memory'
+      'save_in_memory',
+      'record_task',
+      'search_tasks',
+      'get_task'
     ]) {
       expect(MEMORY_TOOLS.find((tool) => tool.name === name)?.roles).toEqual(['orchestrator'])
     }
@@ -102,7 +105,7 @@ describe('memory tool handlers', () => {
   it('exposes only the orchestrator-owned tools', () => {
     const orchestratorTools = MEMORY_TOOLS.filter((tool) => tool.roles.includes('orchestrator'))
     expect(handlers.tools).toEqual(orchestratorTools)
-    expect(handlers.tools).toHaveLength(8)
+    expect(handlers.tools).toHaveLength(11)
   })
 
   it('records, lists and supersedes decisions end to end', () => {
@@ -230,7 +233,7 @@ describe('memory tool role gating', () => {
     store.close()
   })
 
-  it('exposes only ask_orq to coders and validators, the eight orchestrator tools to the orchestrator', () => {
+  it('exposes only ask_orq to coders and validators, the eleven orchestrator tools to the orchestrator', () => {
     expect(createMemoryToolHandlers(store, 'coder').tools.map((tool) => tool.name)).toEqual([
       'ask_orq'
     ])
@@ -238,7 +241,7 @@ describe('memory tool role gating', () => {
       'ask_orq'
     ])
     const orchestrator = createMemoryToolHandlers(store, 'orchestrator')
-    expect(orchestrator.tools).toHaveLength(8)
+    expect(orchestrator.tools).toHaveLength(11)
     expect(orchestrator.tools).toEqual(
       MEMORY_TOOLS.filter((tool) => tool.roles.includes('orchestrator'))
     )

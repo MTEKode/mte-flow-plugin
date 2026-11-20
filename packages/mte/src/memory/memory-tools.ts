@@ -14,11 +14,16 @@ export type MemoryToolName =
   | 'answer_orq'
   | 'get_pending_questions'
   | 'save_in_memory'
+  | 'record_task'
+  | 'search_tasks'
+  | 'get_task'
 
 export type MemoryToolDefinition = {
   name: MemoryToolName
   description: string
   roles: readonly MemoryRole[]
+  /** Per-tool defaults for optional inputs; they win over INPUT_DEFAULTS. */
+  defaults?: Record<string, unknown>
   input_schema: {
     type: 'object'
     properties: Record<string, unknown>
@@ -91,7 +96,7 @@ function parseToolInput(tool: MemoryToolDefinition, input: unknown): Record<stri
   const record: Record<string, unknown> = { ...input }
   const parsed: Record<string, unknown> = {}
   for (const [field, schema] of Object.entries(tool.input_schema.properties)) {
-    const value = record[field] ?? INPUT_DEFAULTS[field]
+    const value = record[field] ?? tool.defaults?.[field] ?? INPUT_DEFAULTS[field]
     if (value === undefined) {
       if (tool.input_schema.required.includes(field)) {
         throw new ToolInputError(`${field}: required`)
@@ -171,7 +176,7 @@ export const MEMORY_TOOLS: readonly MemoryToolDefinition[] = [
   {
     name: 'search_memory',
     description:
-      'Full-text search (FTS5) over the recorded Q&A history and saved notes. Returns matching qa entries and notes ranked by relevance.',
+      'Full-text search (FTS5) over the recorded Q&A history, saved notes and recorded tasks. Returns matching qa entries, notes and tasks (kind \'task\') ranked by relevance.',
     roles: ['orchestrator'],
     input_schema: {
       type: 'object',
@@ -240,6 +245,59 @@ export const MEMORY_TOOLS: readonly MemoryToolDefinition[] = [
       },
       required: ['kind', 'topic', 'content']
     }
+  },
+  {
+    name: 'record_task',
+    description:
+      'Upsert the memory row of a task by task_id (call it after merging each task). Partial updates are allowed; title is required when the row does not exist yet. Rows are searchable across tasks via search_tasks.',
+    roles: ['orchestrator'],
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'Orca task id; the upsert key.' },
+        run_id: { type: 'string', description: 'Orchestration run the task belongs to.' },
+        title: { type: 'string', description: 'Short task title.' },
+        goal: { type: 'string', description: 'What the task was meant to achieve.' },
+        what_was_done: { type: 'string', description: 'What was actually done, from the worker and validator reports.' },
+        approach: { type: 'string', description: 'How it was done: mechanism and key technical choices.' },
+        decisions: { type: 'string', description: 'Decisions taken while doing it.' },
+        files: { type: 'array', items: { type: 'string' }, description: 'Files or directories touched.' },
+        validation: { type: 'string', description: 'How it was validated and the outcome.' },
+        lessons: { type: 'string', description: 'Lessons, traps and constraints for similar future work.' },
+        agent_model: { type: 'string', description: 'Agent and model that did the work.' },
+        commit_sha: { type: 'string', description: 'Merge or commit sha of the result.' }
+      },
+      required: ['task_id']
+    }
+  },
+  {
+    name: 'search_tasks',
+    description:
+      'Search what was done in other tasks of this repo: optional FTS5 query plus filters, ranked by bm25 with a snippet. Use get_task for the full row.',
+    roles: ['orchestrator'],
+    defaults: { limit: 10 },
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Free-text query; terms are combined with AND. Omit to list newest first.' },
+        run_id: { type: 'string', description: 'Only tasks of this run.' },
+        file: { type: 'string', description: 'Only tasks whose files contain this substring.' },
+        since: { type: 'string', description: 'ISO date (YYYY-MM-DD[THH:MM:SSZ]); tasks created at or after it.' },
+        until: { type: 'string', description: 'ISO date; tasks created up to it (a bare date includes that whole day).' },
+        limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Maximum rows to return (default 10).' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'get_task',
+    description: 'Return the full memory row of a task by task_id.',
+    roles: ['orchestrator'],
+    input_schema: {
+      type: 'object',
+      properties: { task_id: { type: 'string', description: 'Orca task id.' } },
+      required: ['task_id']
+    }
   }
 ]
 
@@ -260,13 +318,20 @@ const memoryToolRunners: Record<MemoryToolName, MemoryToolRunner> = {
   record_qa: (store, _role, i) => store.record_qa(i.step_id, i.topic, i.question, i.answer),
   search_memory: (store, _role, i) => ({
     qa: store.search_qa(i.query, i.limit),
-    notes: store.search_notes(i.query, i.limit)
+    notes: store.search_notes(i.query, i.limit),
+    tasks: store.search_tasks({ query: i.query, limit: i.limit }).map((task) => ({ kind: 'task', ...task }))
   }),
   ask_orq: (store, role, i) =>
     store.ask_question(narrowAskRole(role), i.step_id, i.topic, i.question),
   answer_orq: (store, _role, i) => store.answer_question(i.question_id, i.answer),
   get_pending_questions: (store) => store.get_pending_questions(),
-  save_in_memory: (store, _role, i) => store.save_note(i.kind, i.topic, i.content)
+  save_in_memory: (store, _role, i) => store.save_note(i.kind, i.topic, i.content),
+  record_task: (store, _role, i) => {
+    const { task_id, ...rest } = i
+    return store.record_task({ task_id, ...rest })
+  },
+  search_tasks: (store, _role, i) => store.search_tasks(i),
+  get_task: (store, _role, i) => store.get_task(i.task_id)
 }
 
 export function createMemoryToolHandlers(

@@ -72,7 +72,10 @@ describe('mte memory over stdio', () => {
 
   it('exposes the full toolkit to the orchestrator role', async () => {
     const names = await listTools('orchestrator')
-    expect(names).toHaveLength(8)
+    expect(names).toHaveLength(11)
+    for (const name of ['record_task', 'search_tasks', 'get_task']) {
+      expect(names).toContain(name)
+    }
     expect(names).not.toContain('ask_orq')
     expect(names).toContain('record_decision')
     expect(names).toContain('answer_orq')

@@ -13,7 +13,7 @@ MTE es un flujo de tres roles coordinado con `orca orchestration`: un **planner*
 1. Reclama el workspace: `mte planner claim`. Solo el planner reclamado puede ejecutar `orca orchestration run-create` y `worker-start`; el resto (también quien no presenta identidad) recibe un deny del guard. Si responde «planner already claimed», di al usuario quién lo tiene (`mte planner show --json`) y pregunta antes de ejecutar `mte planner claim --force`; nunca continúes sin claim en silencio. En opencode, si `MTE_OPENCODE_SESSION` está vacío (build sin hook de shell), reclama con `mte planner claim --opencode-session <id de tu sesión>` (el deny del guard te la indica).
 2. Lee `playbook.md` (sección «Planner») y sigue su flujo: brainstorming → grill → revisión autónoma → requirements lock → ejecución → QA y PR.
 3. Despacha SIEMPRE con `mte dispatch --task <id>`: aplica el pin de worker de `.mte/worker-pin.json`. Un `worker-start` directo sin `--agent/--model` del pin se deniega con el comando corregido.
-4. Memoria: servidor MCP `mte-memory` (record_decision, get_decisions, search_memory, record_qa, save_in_memory, ...). Búscala antes de decidir.
+4. Memoria: servidor MCP `mte-memory` (record_decision, get_decisions, search_memory, record_qa, save_in_memory, ...). Búscala antes de decidir. Es una BD por repo (compartida entre worktrees): tras fusionar cada tarea llama `record_task` y, en la revisión autónoma, `search_tasks` sobre las áreas que vas a tocar.
 5. Si no hay objetivo, pregúntalo al usuario (herramienta de preguntas interactivas).
 
 ## Si eres un worker (coder, validator, QA, poller)

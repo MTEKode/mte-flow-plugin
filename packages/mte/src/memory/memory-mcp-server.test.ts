@@ -159,7 +159,7 @@ describe('runMemoryMcpServer', () => {
     await session.end()
   })
 
-  it('role-gates tools/list: eight orchestrator tools, ask_orq only for coder and validator', async () => {
+  it('role-gates tools/list: eleven orchestrator tools, ask_orq only for coder and validator', async () => {
     const orchestrator = startSession('orchestrator', workspace)
     orchestrator.request(1, 'tools/list')
     const listed = replyResult(await orchestrator.replies.nextReply())
@@ -168,7 +168,7 @@ describe('runMemoryMcpServer', () => {
     if (!Array.isArray(tools)) {
       throw new Error('tools must be an array')
     }
-    expect(tools).toHaveLength(8)
+    expect(tools).toHaveLength(11)
     for (const entry of tools) {
       const tool = isRecord(entry) ? entry : null
       const inputSchema = tool !== null && isRecord(tool.inputSchema) ? tool.inputSchema : null

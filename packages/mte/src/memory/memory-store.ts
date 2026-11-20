@@ -1,4 +1,7 @@
 // Ported from spookfish:src/shared/mte/memory-store.ts @ 4c059137f8e
+import { toFtsMatchQuery } from './fts-query.ts'
+import { createTaskStore } from './task-store.ts'
+import type { TaskStore } from './task-store.ts'
 import type { SqliteConnection, SqliteRow } from './sqlite-connection.ts'
 
 export type DecisionStatus = 'active' | 'superseded'
@@ -46,7 +49,7 @@ export type NoteRow = {
   created_at: string
 }
 
-export type MemoryStore = {
+export type MemoryStore = TaskStore & {
   record_decision(
     feature: string,
     decision: string,
@@ -195,14 +198,7 @@ function toNoteRow(row: SqliteRow): NoteRow {
   }
 }
 
-/** Converts raw user text into a safe FTS5 MATCH expression. */
-export function toFtsMatchQuery(query: string): string {
-  return query
-    .split(/\s+/)
-    .filter((token) => token !== '')
-    .map((token) => `"${token.replaceAll('"', '""')}"`)
-    .join(' AND ')
-}
+export { toFtsMatchQuery }
 
 export function createMemoryStore(db: SqliteConnection): MemoryStore {
   const selectById = <Row>(
@@ -235,6 +231,8 @@ export function createMemoryStore(db: SqliteConnection): MemoryStore {
   }
 
   return {
+    ...createTaskStore(db),
+
     record_decision(feature, decision, rationale, affected_files) {
       const texts = requireTextFields({ feature, decision, rationale })
       const files = requireTextArray(affected_files, 'affected_files')

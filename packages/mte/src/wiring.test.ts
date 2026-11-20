@@ -578,6 +578,8 @@ describe('skill assets', () => {
     }
     assert.ok(!/orca mte/.test(skill + playbook))
     assert.match(playbook, /mte dispatch/)
+    assert.match(playbook, /Tras fusionar cada tarea\*\* llama `record_task`/)
+    assert.match(playbook, /Revisión autónoma[\s\S]*search_tasks/)
     for (const text of [skill, playbook]) {
       assert.match(text, /~\/\.mte\/bin\/mte\.mjs/)
       assert.match(text, /planner already claimed/)

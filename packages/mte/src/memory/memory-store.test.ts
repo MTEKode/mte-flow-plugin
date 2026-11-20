@@ -16,15 +16,18 @@ const TRIGGER_NAMES = [
   'notes_fts_after_update',
   'qa_fts_after_delete',
   'qa_fts_after_insert',
-  'qa_fts_after_update'
+  'qa_fts_after_update',
+  'tasks_fts_after_delete',
+  'tasks_fts_after_insert',
+  'tasks_fts_after_update'
 ]
 
-const ALL_TABLES = ['decisions', 'notes', 'notes_fts', 'qa_fts', 'qa_log', 'questions']
+const ALL_TABLES = ['decisions', 'meta', 'notes', 'notes_fts', 'qa_fts', 'qa_log', 'questions', 'tasks', 'tasks_fts']
 
 function tableNames(db: SqliteConnection): unknown[] {
   return db
     .prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('decisions', 'qa_log', 'qa_fts', 'questions', 'notes', 'notes_fts') ORDER BY name"
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('decisions', 'qa_log', 'qa_fts', 'questions', 'notes', 'notes_fts', 'meta', 'tasks', 'tasks_fts') ORDER BY name"
     )
     .all()
     .map((row) => row.name)
@@ -38,7 +41,7 @@ function triggerNames(db: SqliteConnection): unknown[] {
 }
 
 describe('memory database schema', () => {
-  it('creates the six tables and six FTS triggers in :memory:', () => {
+  it('creates the nine tables and nine FTS triggers in :memory:', () => {
     const db = openMemoryDatabase(':memory:')
     expect(tableNames(db)).toEqual(ALL_TABLES)
     expect(triggerNames(db)).toEqual(TRIGGER_NAMES)

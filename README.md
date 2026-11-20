@@ -14,7 +14,7 @@ Development alternative: clone this repo, then `cd packages/mte && npm run build
 
 | Command | What it does |
 | --- | --- |
-| `mte memory [--role orchestrator\|coder\|validator] [--workspace <path>]` | Stdio MCP server over `<workspace>/.mte/memory.db`. The orchestrator gets the full toolkit; coder/validator get only `ask_orq`. |
+| `mte memory [--role orchestrator\|coder\|validator] [--workspace <path>]` | Stdio MCP server over one SQLite DB per repo, `<git-common-dir>/mte/memory.db` (shared by all worktrees; `<cwd>/.mte/memory.db` outside git; a legacy `<worktree>/.mte/memory.db` is imported once, never deleted). The orchestrator gets the full toolkit; coder/validator get only `ask_orq`. Task memory: `record_task` (upsert one row per task), `search_tasks` (FTS5 + `run_id`/`file`/`since`/`until` filters), `get_task`; `search_memory` also returns tasks. |
 | `mte check [--json]` | Detects and runs lint/typecheck/test groups; the exit code is the number of failing groups. |
 | `mte deploy-check config [--json]` | Prints `<workspace>/.mte/deploy-check.json` (`url`, `username`, `linearDoneState`) plus `hasPassword`; the password is read only from `MTE_DEPLOY_CHECK_PASSWORD` and never printed. |
 | `mte deploy-check validated --summary <text> [--failed]` | Comments on the linked Linear issue via `orca linear comment add --current` and, unless `--failed`, runs `orca linear status set --current --to <linearDoneState>`. Exits non-zero when no issue is linked. |

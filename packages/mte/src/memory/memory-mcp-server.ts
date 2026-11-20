@@ -1,7 +1,7 @@
 // Ported from spookfish:src/shared/mte/mcp/memory-mcp-server.ts @ 4c059137f8e
 import type { Readable, Writable } from 'node:stream'
 import { errorMessage } from '../error-message.ts'
-import { memoryDbPath, openMemoryStore } from './memory-database.ts'
+import { openWorkspaceMemoryStore } from './memory-migration.ts'
 import type { MemoryStore } from './memory-store.ts'
 import { createMemoryToolHandlers } from './memory-tools.ts'
 import type { MemoryRole, MemoryToolResult } from './memory-tools.ts'
@@ -158,7 +158,7 @@ export async function runMemoryMcpServer(
 ): Promise<void> {
   let store: MemoryStore
   try {
-    store = openMemoryStore(memoryDbPath(options.workspaceRoot))
+    store = openWorkspaceMemoryStore(options.workspaceRoot)
   } catch (error) {
     // Startup failures must surface to the spawner before any protocol traffic exists.
     console.error(`orca-mte-memory: cannot open the memory store: ${errorMessage(error)}`)
