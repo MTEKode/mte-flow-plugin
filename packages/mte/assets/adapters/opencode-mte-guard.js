@@ -41,7 +41,13 @@ export default {
         return // fail open
       }
       if (res.status === 2) {
-        throw new Error((res.stderr || '').trim() || 'denied by mte guard')
+        const reason = (res.stderr || '').trim() || 'denied by mte guard'
+        // fallback mode never injects MTE_OPENCODE_SESSION, so the planner must claim by this session id
+        throw new Error(
+          hasShellHook || !sessionID
+            ? reason
+            : `${reason} (opencode session ${sessionID}; planners claim with: mte planner claim --opencode-session ${sessionID})`
+        )
       }
     }
 
@@ -85,7 +91,10 @@ export default {
         }
       })
     } catch {
-      hasShellHook = false // no shell hook in this opencode build: decide in execute.before with the session id only
+      // No shell hook in this opencode build: decide in execute.before with the session id only. Nothing is injected into
+      // the shell (no env to verify against), so a planner claims with `mte planner claim --opencode-session <id>` and
+      // claim and guard both key on that session id.
+      hasShellHook = false
     }
 
     await ctx.tool.hook('execute.before', (e) => {

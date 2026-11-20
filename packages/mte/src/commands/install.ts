@@ -10,7 +10,7 @@ const AGENTS = ['claude', 'opencode'] as const
 type Agent = (typeof AGENTS)[number]
 
 const MEMORY_ARGS = ['memory', '--role', 'orchestrator']
-const GITIGNORE_LINES = ['.mte/memory.db', '.mte/planner.json', '.mte/guard.log']
+const GITIGNORE_LINES = ['.mte/memory.db*', '.mte/planner.json', '.mte/guard.log']
 
 type Json = Record<string, unknown>
 

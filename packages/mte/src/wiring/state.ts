@@ -1,5 +1,6 @@
+import { spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 /** Who is calling: Orca session id (native chat), terminal handle (terminal agents) and/or opencode session id. */
 export type Identity = { sessionId?: string; terminalHandle?: string; opencodeSessionId?: string }
@@ -64,7 +65,17 @@ export function describeIdentity(identity: Identity): string {
 }
 
 const pinPath = (ws: string): string => join(ws, MTE_DIR, 'worker-pin.json')
-const plannerPath = (ws: string): string => join(ws, MTE_DIR, 'planner.json')
+const legacyPlannerPath = (ws: string): string => join(ws, MTE_DIR, 'planner.json')
+
+/**
+ * The planner claim is shared by every worktree of a repo: `<git-common-dir>/mte/planner.json` (inside `.git`, never
+ * committed). A workspace that is not a git checkout keeps the claim in its own `.mte/`.
+ */
+function plannerPath(ws: string): string {
+  const res = spawnSync('git', ['rev-parse', '--git-common-dir'], { cwd: ws, encoding: 'utf8' })
+  const dir = res.status === 0 ? res.stdout.trim() : ''
+  return dir === '' ? legacyPlannerPath(ws) : join(resolve(ws, dir), 'mte', 'planner.json')
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -114,7 +125,24 @@ export function writePin(ws: string, pin: WorkerPin): WorkerPin {
   return clean
 }
 
+/** One-time move of a pre-shared-claim `<ws>/.mte/planner.json` to the shared location (only when no shared claim exists). */
+function migrateLegacyPlanner(ws: string): void {
+  const legacy = legacyPlannerPath(ws)
+  const shared = plannerPath(ws)
+  if (legacy === shared || !existsSync(legacy)) {
+    return
+  }
+  if (!existsSync(shared)) {
+    const raw = readJsonFile(legacy)
+    if (raw !== null) {
+      writeJsonFile(shared, raw)
+    }
+  }
+  rmSync(legacy, { force: true })
+}
+
 export function readPlanner(ws: string): PlannerClaim | null {
+  migrateLegacyPlanner(ws)
   const raw = readJsonFile(plannerPath(ws))
   if (raw === null) {
     return null
@@ -131,6 +159,7 @@ export function writePlanner(ws: string, identity: Identity): PlannerClaim {
 
 /** Removes the planner claim; true when there was one. */
 export function removePlanner(ws: string): boolean {
+  migrateLegacyPlanner(ws)
   const had = existsSync(plannerPath(ws))
   rmSync(plannerPath(ws), { force: true })
   return had

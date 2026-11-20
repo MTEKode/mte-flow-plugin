@@ -14,7 +14,7 @@ import {
 const WS = { id: 'wt-1', kind: 'worktree', name: 'feat', path: '/repo/feat', branch: 'feat', hostId: 'local' }
 
 /** Stubbed child_process + host API; records every call in order. */
-function stubs({ settings = {}, exec, ws = WS, home = '/home/me', gitPaths } = {}) {
+function stubs({ settings = {}, exec, ws = WS, home = '/home/me', gitPaths, claim = { claimed: false } } = {}) {
   const calls = []
   const deps = {
     exists: (p) => (gitPaths ? gitPaths.includes(p) : true),
@@ -26,6 +26,9 @@ function stubs({ settings = {}, exec, ws = WS, home = '/home/me', gitPaths } = {
         calls.push({ kind: 'exec', file, args, cwd: opts?.cwd, env: opts?.env })
         if (file === '/App/Resources/bin/orca') {
           return { code: 0, stdout: JSON.stringify({ ok: true, result: { outcome: { kind: 'terminal', handle: 'term-1' } } }), stderr: '' }
+        }
+        if (args[0] === 'planner' && args[1] === 'show') {
+          return { code: 0, stdout: JSON.stringify(claim), stderr: '' }
         }
         return { code: 0, stdout: '', stderr: '' }
       }),
@@ -72,7 +75,7 @@ test('bootstrap prompt truncates an oversized goal with a marker', () => {
   assert.ok(!/[\uD800-\uDBFF]\n\[goal truncated\]$/.test(emoji))
 })
 
-test('start run: install, pin set, planner release, then the orca CLI launch with /mte-flow <goal>, in that order', async () => {
+test('start run: planner show, install, pin set, then the orca CLI launch with /mte-flow <goal>, in that order (no release without a claim)', async () => {
   const { deps, calls } = stubs({
     settings: { plannerAgent: 'claude', workerAgent: 'claude', workerModel: 'claude-sonnet-5-5', workerEffort: 'high', mteBin: 'mte' }
   })
@@ -82,13 +85,12 @@ test('start run: install, pin set, planner release, then the orca CLI launch wit
   const seq = calls.filter((c) => c.kind === 'exec')
   assert.deepEqual(
     seq.map((c) => `${c.file} ${c.args.slice(0, 2).join(' ')}`),
-    ['mte install --agents', 'mte pin set', 'mte planner release', '/App/Resources/bin/orca agent launch']
+    ['mte planner show', 'mte install --agents', 'mte pin set', '/App/Resources/bin/orca agent launch']
   )
-  assert.deepEqual(seq[0].args, ['install', '--agents', 'claude,opencode'])
-  assert.equal(seq[0].cwd, '/repo/feat')
-  assert.deepEqual(seq[1].args, ['pin', 'set', '--agent', 'claude', '--model', 'claude-sonnet-5-5', '--effort', 'high'])
+  assert.deepEqual(seq[0].args, ['planner', 'show', '--json'])
+  assert.deepEqual(seq[1].args, ['install', '--agents', 'claude,opencode'])
   assert.equal(seq[1].cwd, '/repo/feat')
-  assert.deepEqual(seq[2].args, ['planner', 'release'])
+  assert.deepEqual(seq[2].args, ['pin', 'set', '--agent', 'claude', '--model', 'claude-sonnet-5-5', '--effort', 'high'])
   assert.equal(seq[2].cwd, '/repo/feat')
   assert.deepEqual(seq[3].args, [
     'agent', 'launch', '--agent', 'claude', '--worktree', 'path:/repo/feat', '--surface', 'terminal',
@@ -114,13 +116,13 @@ test('start run falls back to the host agent.launch only when the orca CLI is mi
       if (file === '/App/Resources/bin/orca') {
         throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
       }
-      return { code: 0, stdout: '', stderr: '' }
+      return { code: 0, stdout: '{"claimed":false}', stderr: '' }
     }
   })
   const result = await startRun(deps, { goal: 'x' })
   assert.equal(result.ok, true)
   assert.deepEqual(calls.find((c) => c.method === 'agent.launch').params, { workspaceId: 'wt-1', agent: 'claude', prompt: '/mte-flow x' })
-  const failing = stubs({ exec: async (file) => (file === 'mte' ? { code: 0, stdout: '', stderr: '' } : { code: 1, stdout: '', stderr: 'launch refused' }) })
+  const failing = stubs({ exec: async (file) => (file === 'mte' ? { code: 0, stdout: '{"claimed":false}', stderr: '' } : { code: 1, stdout: '', stderr: 'launch refused' }) })
   const res = await startRun(failing.deps, { goal: 'x' })
   assert.equal(res.ok, false)
   assert.match(res.error.message, /launch refused/)
@@ -143,7 +145,7 @@ test('start run: planner overrides from the form beat the settings', async () =>
   const { deps, calls } = stubs({ settings: { plannerAgent: 'claude', workerAgent: 'claude' } })
   await startRun(deps, { goal: 'x', plannerAgent: 'opencode' })
   assert.equal(calls.find((c) => c.args?.[0] === 'agent').args[3], 'opencode')
-  assert.deepEqual(calls.find((c) => c.kind === 'exec').args, ['install', '--agents', 'claude,opencode'])
+  assert.deepEqual(calls.find((c) => c.kind === 'exec' && c.args[0] === 'install').args, ['install', '--agents', 'claude,opencode'])
 })
 
 test('start run skips the pin when no worker model is set', async () => {
@@ -159,7 +161,7 @@ test('start run stops at the first failing step and never launches', async () =>
   const { deps, calls } = stubs({ exec })
   const result = await startRun(deps, { goal: 'x' })
   assert.equal(result.ok, false)
-  assert.equal(result.error.stage, 'install')
+  assert.equal(result.error.stage, 'planner')
   assert.match(result.error.message, /boom/)
   assert.ok(!calls.some((c) => c.args?.[0] === 'agent'))
 })
@@ -172,7 +174,8 @@ test('missing mte binary yields the mte_missing error with install instructions'
   for (const result of [await startRun(deps, { goal: 'x' }), await installInWorkspace(deps)]) {
     assert.equal(result.ok, false)
     assert.equal(result.error.code, 'mte_missing')
-    assert.match(result.error.message, /npm i -g @mtekode\/mte/)
+    assert.match(result.error.message, /npm link/)
+    assert.doesNotMatch(result.error.message, /npm i\s+-g/)
   }
   assert.ok(!calls.some((c) => c.args?.[0] === 'agent' || c.method === 'agent.launch'))
   assert.deepEqual(await checkMte(deps, { mteBin: 'mte' }).then((r) => r.missing), true)
@@ -277,4 +280,35 @@ test('orca CLI and profile are derived from the hosting app (execPath + install 
     resolveOrcaCli({ execPath: '/x/Orca', platform: 'darwin', moduleUrl: 'file:///dev/plugin/worker/lib.mjs', exists: () => false }),
     { bin: 'orca', env: {} }
   )
+})
+
+test('start run with a live planner claim does not release it: it reports the holder', async () => {
+  const { deps, calls } = stubs({ claim: { claimed: true, terminalHandle: 'term_9', claimedAt: '2026-01-01T00:00:00Z' } })
+  const result = await startRun(deps, { goal: 'x' })
+  assert.equal(result.ok, false)
+  assert.equal(result.error.code, 'planner_claimed')
+  assert.match(result.error.message, /terminal term_9/)
+  assert.equal(result.claim.holder, 'terminal term_9')
+  const execs = calls.filter((c) => c.kind === 'exec')
+  assert.deepEqual(execs.map((c) => c.args.slice(0, 2).join(' ')), ['planner show'])
+})
+
+test('Replace path releases the claim, then launches, in order', async () => {
+  const { deps, calls } = stubs({ claim: { claimed: true, sessionId: 's1' }, settings: { workerModel: 'm' } })
+  const result = await startRun(deps, { goal: 'x', replace: true })
+  assert.equal(result.ok, true)
+  assert.deepEqual(
+    calls.filter((c) => c.kind === 'exec').map((c) => c.args.slice(0, 2).join(' ')),
+    ['planner show', 'install --agents', 'pin set', 'planner release', 'agent launch']
+  )
+})
+
+test('checkMte: a non-zero --version exit is unusable, with the stderr first line', async () => {
+  const exec = async () => ({ code: 1, stdout: '', stderr: 'ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING\nmore' })
+  const res = await checkMte({ exec }, { mteBin: 'mte' })
+  assert.equal(res.missing, true)
+  assert.equal(res.unusable, true)
+  assert.match(res.message, /ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING/)
+  assert.doesNotMatch(res.message, /more/)
+  assert.deepEqual(await checkMte({ exec: async () => ({ code: 0, stdout: '0.1.0', stderr: '' }) }, { mteBin: 'mte' }), { missing: false })
 })

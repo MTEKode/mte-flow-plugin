@@ -80,7 +80,7 @@
       {
         "key": "mteBin",
         "title": "mte binary",
-        "description": "Command or absolute path of the MTE CLI. Install it with `npm i -g @mtekode/mte`.",
+        "description": "Command or absolute path of the MTE CLI. Install it by cloning https://github.com/MTEKode/mte-flow-plugin and running `cd packages/mte && npm link`.",
         "type": "string",
         "default": "mte"
       }

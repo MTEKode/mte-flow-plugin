@@ -2,7 +2,7 @@
 export {}
 
 type McpError = { stage: string; code: string; message: string }
-type Result<T = object> = ({ ok: true } & T) | { ok: false; error: McpError }
+type Result<T = object> = ({ ok: true } & T) | { ok: false; error: McpError; claim?: { holder: string; claimedAt: string } }
 
 declare module 'orca' {
   // oxlint-disable-next-line typescript/consistent-type-definitions -- declaration merging needs an interface
@@ -18,7 +18,7 @@ declare module 'orca' {
           workerEffort: string
           mteBin: string
         }
-        mte: { missing: boolean; message?: string }
+        mte: { missing: boolean; unusable?: boolean; message?: string }
         workspace: { id: string; name: string; path: string; branch: string | null } | null
         workers: {
           dispatchId: string
@@ -35,7 +35,7 @@ declare module 'orca' {
       }
     }
     'run.start': {
-      input: { goal: string; plannerAgent: string; plannerModel: string }
+      input: { goal: string; plannerAgent: string; plannerModel: string; replace?: boolean }
       output: Result<{ terminalId: string; pinned: boolean; truncated: boolean }>
     }
     'workspace.install': { input: Record<string, never>; output: Result }

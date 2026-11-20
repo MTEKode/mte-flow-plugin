@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { gatePlanner, pinFlags } from '../wiring/guard-logic.ts'
 import { getFlag, hasFlag, removeFlags } from '../wiring/shell-parse.ts'
-import { hasIdentity, identityFromEnv, readPin } from '../wiring/state.ts'
+import { identityFromEnv, readPin } from '../wiring/state.ts'
 import { resolveWorkspaceRoot, usageError } from './flags.ts'
 import type { Command } from './flags.ts'
 
@@ -20,7 +20,7 @@ export const dispatchCommand: Command = ({ flags, cwd, rest = [] }) => {
   }
   try {
     const who = identityFromEnv(process.env)
-    const verdict = hasIdentity(who) ? gatePlanner('worker-start', who, root) : { allow: true as const }
+    const verdict = gatePlanner('worker-start', who, root)
     if (!verdict.allow) {
       process.stderr.write(`${verdict.reason}\n`)
       return 2

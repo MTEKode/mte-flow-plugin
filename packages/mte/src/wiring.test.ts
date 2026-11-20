@@ -159,6 +159,86 @@ describe('guard logic', () => {
   })
 })
 
+describe('review fixes', () => {
+  const git = (cwd: string, ...args: string[]) =>
+    spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' })
+
+  it('prose that merely mentions orchestration commands is never a fake invocation (quotes, backticks, heredocs)', () => {
+    const ws = repo()
+    const planner = { sessionId: 'p' }
+    const worker = { sessionId: 'w' }
+    writePlanner(ws, planner)
+    writePin(ws, { agent: 'claude', model: 'sonnet' })
+    const prose = [
+      "orca orchestration task-create --spec 'Out of scope: never call `orca orchestration worker-start --task 3` yourself'",
+      'orca orchestration task-create --spec "never call `orca orchestration worker-start --task 3` or orca orchestration run-create"',
+      "orca orchestration ask --question 'should I run `orca orchestration run-create`?'",
+      'git commit -m "$(cat <<\'EOF\'\nfix: stop denying orca orchestration run-create in prose (it\'s fine)\n\norca orchestration worker-start --task 3\nEOF\n)"',
+      "cat <<EOF\norca orchestration run-create\nEOF",
+      "cat <<-'X' > notes.md\n`orca orchestration worker-start --task 1`\nX\necho done"
+    ]
+    for (const cmd of prose) {
+      assert.deepEqual(evaluateCommand(cmd, planner, ws), { allow: true }, cmd)
+      assert.deepEqual(evaluateCommand(cmd, worker, ws), { allow: true }, cmd)
+    }
+    // real invocations still count
+    for (const cmd of [
+      'bash -c "orca orchestration worker-start --task x"',
+      "sh -lc 'orca orchestration run-create'",
+      'eval "orca orchestration worker-start --task x"',
+      'echo $(orca orchestration worker-start --task x)',
+      'echo `orca orchestration worker-start --task x`',
+      'echo "$(orca orchestration worker-start --task x)"',
+      'git commit -m "$(cat <<\'EOF\'\nmsg\nEOF\n)" && orca orchestration worker-start --task x',
+      "cat <<EOF\nhello\nEOF\norca orchestration run-create"
+    ]) {
+      assert.equal(evaluateCommand(cmd, worker, ws).allow, false, cmd)
+    }
+  })
+
+  it('dispatch with no identity is denied once a planner is claimed, and never spawns orca', () => {
+    const ws = repo()
+    const orca = { ORCA_CLI_COMMAND: join(bin, 'fake-orca') }
+    writePlanner(ws, { sessionId: 'p' })
+    const res = mte(ws, ['dispatch', '--task', 'T-1'], orca)
+    assert.equal(res.status, 2)
+    assert.doesNotMatch(res.stdout, /ORCA/)
+    // unclaimed + no identity stays allowed
+    const free = repo()
+    assert.match(mte(free, ['dispatch', '--task', 'T-1'], orca).stdout, /ORCA orchestration worker-start/)
+  })
+
+  it('install ignores the SQLite sidecar files', () => {
+    const ws = repo()
+    assert.equal(mte(ws, ['install', '--agents', 'claude']).status, 0)
+    assert.ok(readFileSync(join(ws, '.gitignore'), 'utf8').split('\n').includes('.mte/memory.db*'))
+  })
+
+  it('the planner claim is shared by every worktree of the repo; an old .mte/planner.json is migrated', () => {
+    const a = repo()
+    git(a, 'commit', '--allow-empty', '-m', 'init')
+    const b = join(root, `wt-${repos.length}`)
+    assert.equal(git(a, 'worktree', 'add', '-q', b, '-b', 'feat').status, 0)
+    // legacy claim in A is moved to the shared location on first read
+    mkdirSync(join(a, '.mte'))
+    writeFileSync(join(a, '.mte', 'planner.json'), JSON.stringify({ sessionId: 'planner-1', claimedAt: 't' }))
+    assert.equal(readPlanner(a)?.sessionId, 'planner-1')
+    assert.equal(existsSync(join(a, '.mte', 'planner.json')), false)
+    assert.equal(readPlanner(b)?.sessionId, 'planner-1')
+    assert.equal(existsSync(join(b, '.mte', 'planner.json')), false)
+    // a worker in B cannot start workers, and its run-create does not auto-claim
+    const bGuard = (command: string, id: string) => mte(b, ['guard', '--command', command, '--session-id', id])
+    assert.equal(bGuard(WORKER_START, 'worker-9').status, 2)
+    assert.equal(bGuard('orca orchestration run-create', 'worker-9').status, 2)
+    assert.equal(readPlanner(a)?.sessionId, 'planner-1')
+    assert.equal(bGuard(WORKER_START, 'planner-1').status, 0)
+    assert.match(git(a, 'status', '--porcelain', '--untracked-files=all').stdout, /^$/)
+    // release from B clears it for A
+    assert.deepEqual(JSON.parse(mte(b, ['planner', 'release']).stdout), { released: true })
+    assert.equal(readPlanner(a), null)
+  })
+})
+
 describe('opencode session identity', () => {
   it('a planner claimed by opencode session id is allowed on its first gated command with no terminal handle', () => {
     const ws = repo()
@@ -330,7 +410,7 @@ describe('mte install', () => {
     assert.equal(oc.model, 'a/b')
     assert.deepEqual(oc.mcp.servers['mte-memory'], { type: 'local', command: ['mte', 'memory', '--role', 'orchestrator'] })
     assert.ok(oc.mcp.servers.other)
-    assert.deepEqual(readFileSync(join(ws, '.gitignore'), 'utf8').split('\n').slice(0, 2), ['node_modules', '.mte/memory.db'])
+    assert.deepEqual(readFileSync(join(ws, '.gitignore'), 'utf8').split('\n').slice(0, 2), ['node_modules', '.mte/memory.db*'])
     assert.equal(readFileSync(join(ws, '.claude/skills/mte-flow/SKILL.md'), 'utf8'), readFileSync(join(ws, '.agents/skills/mte-flow/SKILL.md'), 'utf8'))
   })
 
@@ -469,6 +549,21 @@ describe('opencode plugin (real 2.3.2 event shapes)', () => {
     const exec = (sessionID: string) => hooks['execute.before']?.({ tool: 'shell', sessionID, input: { command: GATED } })
     assert.doesNotThrow(() => exec('ses_planner'))
     assert.throws(() => exec('ses_other'), /planner/)
+    assert.throws(() => exec('ses_other'), /--opencode-session ses_other/)
+  })
+
+  it('without a shell hook a planner that claimed with --opencode-session (env has no identity) is not denied by its own guard', async () => {
+    const ws = repo()
+    mte(ws, ['install', '--agents', 'opencode'])
+    assert.equal(mte(ws, ['planner', 'claim', '--opencode-session', 'ses_p', '--terminal-handle', 'term_p']).status, 0)
+    const mod = await import(pathToFileURL(join(ws, '.opencode/plugins/mte-guard/index.js')).href)
+    const hooks: Record<string, (e: unknown) => void> = {}
+    await mod.default.setup({ location: { directory: ws }, tool: { hook: (n: string, f: (e: unknown) => void) => (hooks[n] = f) } })
+    const exec = (sessionID: string, command: string) => hooks['execute.before']?.({ tool: 'shell', sessionID, input: { command } })
+    for (const command of [GATED, 'orca orchestration run-create']) {
+      assert.doesNotThrow(() => exec('ses_p', command))
+      assert.throws(() => exec('ses_other', command), /planner/)
+    }
   })
 })
 

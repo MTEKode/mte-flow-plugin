@@ -34,6 +34,8 @@ const plannerModel = atom('')
 const busy = atom<string | null>(null)
 const notice = atom<{ tone: 'success' | 'danger'; text: string } | null>(null)
 const prefilled = atom(false)
+/** Holder of a live planner claim that stopped the last Start run; shown with a Replace planner button. */
+const claimedBy = atom<string | null>(null)
 
 const loadState = () => plugin.request('state.get', {})
 
@@ -59,8 +61,14 @@ async function act<T extends { ok: boolean }>(
 ): Promise<void> {
   set(busy, name)
   set(notice, null)
+  set(claimedBy, null)
   try {
     const result = await run()
+    const failure = result as { ok: false; error: { code?: string; message: string }; claim?: { holder: string } }
+    if (!result.ok && failure.error.code === 'planner_claimed') {
+      set(claimedBy, failure.claim?.holder ?? 'an unknown caller')
+      return
+    }
     set(
       notice,
       result.ok
@@ -75,10 +83,16 @@ async function act<T extends { ok: boolean }>(
   }
 }
 
-const startRun = () =>
+const startRun = (replace = false) =>
   act(
     'start',
-    () => plugin.request('run.start', { goal: read(goal), plannerAgent: read(plannerAgent), plannerModel: read(plannerModel) }),
+    () =>
+      plugin.request('run.start', {
+        goal: read(goal),
+        plannerAgent: read(plannerAgent),
+        plannerModel: read(plannerModel),
+        replace
+      }),
     (r) =>
       `Planner started in a new terminal${r.truncated ? ' (goal truncated to fit the 4096-char prompt cap)' : ''}.`
   )
@@ -124,8 +138,20 @@ export default function Panel() {
         </Callout>
       ) : null}
       {snap?.mte.missing ? (
-        <Callout tone="danger" title="mte binary not found">
-          {snap.mte.message} <Code>npm i -g @mtekode/mte</Code>
+        <Callout tone="danger" title={snap.mte.unusable ? 'mte binary not usable' : 'mte binary not found'}>
+          {snap.mte.message}
+        </Callout>
+      ) : null}
+      {read(claimedBy) !== null ? (
+        <Callout tone="warning" title="A planner is already running here">
+          <Stack gap="xs">
+            <Text size="sm">Held by {read(claimedBy)}. Replacing it cuts that planner off from dispatching workers.</Text>
+            <Row>
+              <Button variant="outline" disabled={working !== null} onPress={() => void startRun(true)}>
+                Replace planner
+              </Button>
+            </Row>
+          </Stack>
         </Callout>
       ) : null}
       {msg ? (
@@ -165,7 +191,7 @@ export default function Panel() {
           <Button
             icon="play"
             disabled={working !== null || !read(goal).trim() || !snap?.workspace}
-            onPress={() => void startRun()}
+            onPress={() => void startRun(false)}
           >
             {working === 'start' ? 'Starting…' : 'Start run'}
           </Button>

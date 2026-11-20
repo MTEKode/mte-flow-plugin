@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url'
 // agent.launch and workspace.create cap prompts at 4096 chars; stay well under it.
 export const PROMPT_MAX = 4000
 export const TRUNCATION_MARKER = '\n[goal truncated]'
-export const INSTALL_HINT = 'npm i -g @mtekode/mte'
+export const INSTALL_HINT =
+  'git clone https://github.com/MTEKode/mte-flow-plugin, then `cd mte-flow-plugin/packages/mte && npm link` (Node >= 24)'
 
 /** `/mte-flow <goal>`, with the goal cut (and marked) so the whole prompt fits the host cap. */
 export function buildBootstrapPrompt(goal) {
@@ -187,8 +188,43 @@ export async function installInWorkspace(deps) {
   return err ?? { ok: true, workspace: ws }
 }
 
-/** Start a run with a terminal planner: `mte install`, `mte pin set`, `mte planner release`, then the planner launch with `/mte-flow <goal>`. */
-export async function startRun(deps, { goal, plannerAgent, plannerModel } = {}) {
+/** Human-readable holder of a planner claim (`mte planner show --json`). */
+export function describeClaim(claim) {
+  const parts = [
+    claim.sessionId && `session ${claim.sessionId}`,
+    claim.terminalHandle && `terminal ${claim.terminalHandle}`,
+    claim.opencodeSessionId && `opencode session ${claim.opencodeSessionId}`
+  ].filter(Boolean)
+  return parts.join(' / ') || 'an unknown caller'
+}
+
+/** `mte planner show --json`: { claimed: false } or the claim; a result error when it cannot be read. */
+async function readClaim(deps, settings, cwd) {
+  let res
+  try {
+    res = await deps.exec(settings.mteBin, ['planner', 'show', '--json'], { cwd })
+  } catch (error) {
+    return error?.code === 'ENOENT'
+      ? fail('planner', 'mte_missing', mteMissingError(settings.mteBin).message)
+      : fail('planner', 'exec_failed', String(error?.message ?? error))
+  }
+  try {
+    if (res.code !== 0) {
+      throw new Error(`exited with ${res.code}`)
+    }
+    return { ok: true, claim: JSON.parse(res.stdout) }
+  } catch (error) {
+    const detail = (res.stderr || res.stdout || '').trim().slice(0, 300)
+    return fail('planner', 'mte_failed', `\`mte planner show\` failed (${error.message})${detail ? `: ${detail}` : ''}`)
+  }
+}
+
+/**
+ * Start a run with a terminal planner: `mte planner show` (a live claim stops the run), `mte install`, `mte pin set`,
+ * `mte planner release`, then the planner launch with `/mte-flow <goal>`. With `replace: true` an existing claim is
+ * released instead of stopping the run.
+ */
+export async function startRun(deps, { goal, plannerAgent, plannerModel, replace = false } = {}) {
   const settings = await readSettings(deps.host)
   if (plannerAgent) {
     settings.plannerAgent = plannerAgent
@@ -207,6 +243,22 @@ export async function startRun(deps, { goal, plannerAgent, plannerModel } = {}) 
   if (refused) {
     return refused
   }
+  // a live planner may be mid-run in this workspace: never drop its claim (or change its worker pin) unasked
+  const existing = await readClaim(deps, settings, ws.path)
+  if (!existing.ok) {
+    return existing
+  }
+  if (existing.claim?.claimed && !replace) {
+    const holder = describeClaim(existing.claim)
+    return {
+      ...fail(
+        'planner',
+        'planner_claimed',
+        `A planner already holds this workspace (${holder}). Replace it only if that planner is gone.`
+      ),
+      claim: { holder, claimedAt: existing.claim.claimedAt ?? '' }
+    }
+  }
   const installErr = await runMte(deps, settings, 'install', installArgs(), ws.path)
   if (installErr) {
     return installErr
@@ -218,10 +270,11 @@ export async function startRun(deps, { goal, plannerAgent, plannerModel } = {}) 
       return pinErr
     }
   }
-  // a claim left by a closed terminal/chat would block the new planner (`planner already claimed`)
-  const releaseErr = await runMte(deps, settings, 'release', ['planner', 'release'], ws.path)
-  if (releaseErr) {
-    return releaseErr
+  if (existing.claim?.claimed) {
+    const releaseErr = await runMte(deps, settings, 'release', ['planner', 'release'], ws.path)
+    if (releaseErr) {
+      return releaseErr
+    }
   }
   const prompt = buildBootstrapPrompt(goal)
   try {
@@ -259,10 +312,18 @@ async function launchPlanner(deps, ws, settings, prompt) {
   return terminalId
 }
 
-/** `mte` present? ENOENT is the only "missing" signal; any exit status means the binary ran. */
+/** `mte` usable? ENOENT means missing; a non-zero `--version` exit (e.g. a global npm install that Node cannot type-strip) means unusable. */
 export async function checkMte(deps, settings) {
   try {
-    await deps.exec(settings.mteBin, ['--version'], { timeoutMs: 15_000 })
+    const res = await deps.exec(settings.mteBin, ['--version'], { timeoutMs: 15_000 })
+    if (res?.code) {
+      const line = (res.stderr || res.stdout || '').trim().split('\n')[0] || `exited with ${res.code}`
+      return {
+        missing: true,
+        unusable: true,
+        message: `\`${settings.mteBin} --version\` failed: ${line}. Install it: ${INSTALL_HINT}.`
+      }
+    }
     return { missing: false }
   } catch (error) {
     if (error && error.code === 'ENOENT') {
