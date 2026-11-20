@@ -187,7 +187,7 @@ export async function installInWorkspace(deps) {
   return err ?? { ok: true, workspace: ws }
 }
 
-/** Start a run with a terminal planner: `mte install`, `mte pin set`, then the planner launch with `/mte-flow <goal>`. */
+/** Start a run with a terminal planner: `mte install`, `mte pin set`, `mte planner release`, then the planner launch with `/mte-flow <goal>`. */
 export async function startRun(deps, { goal, plannerAgent, plannerModel } = {}) {
   const settings = await readSettings(deps.host)
   if (plannerAgent) {
@@ -217,6 +217,11 @@ export async function startRun(deps, { goal, plannerAgent, plannerModel } = {}) 
     if (pinErr) {
       return pinErr
     }
+  }
+  // a claim left by a closed terminal/chat would block the new planner (`planner already claimed`)
+  const releaseErr = await runMte(deps, settings, 'release', ['planner', 'release'], ws.path)
+  if (releaseErr) {
+    return releaseErr
   }
   const prompt = buildBootstrapPrompt(goal)
   try {

@@ -1,4 +1,4 @@
-import { describeIdentity, hasIdentity, readPlanner, sameCaller, writePlanner } from '../wiring/state.ts'
+import { describeIdentity, hasIdentity, readPlanner, removePlanner, sameCaller, writePlanner } from '../wiring/state.ts'
 import { callerIdentity, resolveWorkspaceRoot, usageError } from './flags.ts'
 import type { Command } from './flags.ts'
 
@@ -28,5 +28,15 @@ export const plannerShowCommand: Command = ({ flags, cwd }) => {
   }
   const claim = readPlanner(root)
   console.log(JSON.stringify(claim === null ? { claimed: false } : { claimed: true, ...claim }))
+  return 0
+}
+
+/** `mte planner release [--workspace p]`: drops the claim (a stale one blocks the next planner); the next `claim` needs no --force. */
+export const plannerReleaseCommand: Command = ({ flags, cwd }) => {
+  const root = resolveWorkspaceRoot(flags, cwd)
+  if (typeof root !== 'string') {
+    return usageError(root.error)
+  }
+  console.log(JSON.stringify({ released: removePlanner(root) }))
   return 0
 }

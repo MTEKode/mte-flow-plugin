@@ -43,22 +43,25 @@ function checkPin(inv: Invocation, pin: WorkerPin): Verdict {
 }
 
 export function gatePlanner(kind: GateKind, who: Identity, ws: string): Verdict {
-  if (!hasIdentity(who)) {
-    return ALLOW // unidentifiable caller: nothing to compare, never brick the shell
-  }
   const planner = readPlanner(ws)
   if (planner === null) {
     if (kind === 'run-create') {
-      writePlanner(ws, who) // first caller claims the workspace
+      if (hasIdentity(who)) {
+        writePlanner(ws, who) // first caller claims the workspace
+      }
       return ALLOW
+    }
+    if (!hasIdentity(who)) {
+      return ALLOW // nothing claimed and nobody to compare: never brick the shell
     }
     return deny('no MTE planner claimed in this workspace; the planner starts with `orca orchestration run-create` or `mte planner claim`')
   }
   if (sameCaller(planner, who)) {
     return ALLOW
   }
+  const caller = hasIdentity(who) ? '' : ' (caller presented no identity)'
   return deny(
-    `only the claimed MTE planner (${describeIdentity(planner)}) may run \`${kind}\`; workers must not dispatch, use \`orca orchestration ask\` to ask the orchestrator (replace the planner: mte planner claim --force)`
+    `only the claimed MTE planner (${describeIdentity(planner)}) may run \`${kind}\`${caller}; workers must not dispatch, use \`orca orchestration ask\` to ask the orchestrator (replace the planner: mte planner claim --force)`
   )
 }
 

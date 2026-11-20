@@ -8,7 +8,7 @@ import { guardCommand } from './commands/guard.ts'
 import { installCommand } from './commands/install.ts'
 import { memoryCommand } from './commands/memory.ts'
 import { pinGetCommand, pinSetCommand } from './commands/pin.ts'
-import { plannerClaimCommand, plannerShowCommand } from './commands/planner.ts'
+import { plannerClaimCommand, plannerReleaseCommand, plannerShowCommand } from './commands/planner.ts'
 import { readPackageVersion } from './version.ts'
 
 /**
@@ -26,6 +26,7 @@ export const COMMANDS: Record<string, Command> = {
   'pin get': pinGetCommand,
   'planner claim': plannerClaimCommand,
   'planner show': plannerShowCommand,
+  'planner release': plannerReleaseCommand,
   install: installCommand
 }
 
@@ -43,6 +44,7 @@ Usage:
   mte dispatch --task <id> [-- <extra worker-start args>]                 worker-start with the worker pin applied
   mte pin set --agent <a> --model <m> [--effort <e>] | mte pin get --json
   mte planner claim [--force] [--session-id <id>] [--terminal-handle <h>] | mte planner show --json
+  mte planner release [--workspace <path>]                                drop the planner claim (next claim needs no --force)
   mte install [--agents claude,opencode] [--workspace <path>]             wire skill, hook/plugin and memory MCP
   mte --version | mte help
 `
