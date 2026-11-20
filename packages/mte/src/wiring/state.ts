@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 /** Who is calling: Orca session id (native chat), terminal handle (terminal agents) and/or opencode session id. */
@@ -127,6 +127,13 @@ export function writePlanner(ws: string, identity: Identity): PlannerClaim {
   const claim = { ...identity, claimedAt: new Date().toISOString() }
   writeJsonFile(plannerPath(ws), claim)
   return claim
+}
+
+/** Removes the planner claim; true when there was one. */
+export function removePlanner(ws: string): boolean {
+  const had = existsSync(plannerPath(ws))
+  rmSync(plannerPath(ws), { force: true })
+  return had
 }
 
 /** Best-effort diagnostics; the guard must never fail because logging failed. */

@@ -72,7 +72,7 @@ test('bootstrap prompt truncates an oversized goal with a marker', () => {
   assert.ok(!/[\uD800-\uDBFF]\n\[goal truncated\]$/.test(emoji))
 })
 
-test('start run: install, pin set, then the orca CLI launch with /mte-flow <goal>, in that order', async () => {
+test('start run: install, pin set, planner release, then the orca CLI launch with /mte-flow <goal>, in that order', async () => {
   const { deps, calls } = stubs({
     settings: { plannerAgent: 'claude', workerAgent: 'claude', workerModel: 'claude-sonnet-5-5', workerEffort: 'high', mteBin: 'mte' }
   })
@@ -82,17 +82,19 @@ test('start run: install, pin set, then the orca CLI launch with /mte-flow <goal
   const seq = calls.filter((c) => c.kind === 'exec')
   assert.deepEqual(
     seq.map((c) => `${c.file} ${c.args.slice(0, 2).join(' ')}`),
-    ['mte install --agents', 'mte pin set', '/App/Resources/bin/orca agent launch']
+    ['mte install --agents', 'mte pin set', 'mte planner release', '/App/Resources/bin/orca agent launch']
   )
   assert.deepEqual(seq[0].args, ['install', '--agents', 'claude,opencode'])
   assert.equal(seq[0].cwd, '/repo/feat')
   assert.deepEqual(seq[1].args, ['pin', 'set', '--agent', 'claude', '--model', 'claude-sonnet-5-5', '--effort', 'high'])
   assert.equal(seq[1].cwd, '/repo/feat')
-  assert.deepEqual(seq[2].args, [
+  assert.deepEqual(seq[2].args, ['planner', 'release'])
+  assert.equal(seq[2].cwd, '/repo/feat')
+  assert.deepEqual(seq[3].args, [
     'agent', 'launch', '--agent', 'claude', '--worktree', 'path:/repo/feat', '--surface', 'terminal',
     '--prompt', '/mte-flow build the thing', '--json'
   ])
-  assert.deepEqual(seq[2].env, { ORCA_USER_DATA_PATH: '/ud' })
+  assert.deepEqual(seq[3].env, { ORCA_USER_DATA_PATH: '/ud' })
   assert.ok(!calls.some((c) => c.method === 'agent.launch'))
 })
 

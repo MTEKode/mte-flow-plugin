@@ -5,17 +5,20 @@ import { spawnSync } from 'node:child_process'
 export default {
   id: 'mte-guard',
   async setup(ctx) {
-    // The plugin runs inside a shared opencode service: its own process.env is stale/foreign, so identity comes
-    // only from the client env seen by the shell plus the opencode session id. The shell hook fires AFTER the
-    // first `execute.before`, so the opencode session id is always passed too; `mte guard` allows on ANY match.
-    let shellIdentity = {}
+    // The plugin runs inside ONE opencode service shared by many sessions: its own process.env is stale/foreign, so
+    // identity comes only from the client env seen by the shell plus the opencode session id, kept PER session
+    // (never in a single shared variable). The shell hook fires AFTER the first `execute.before`, so the opencode
+    // session id is always passed too; `mte guard` allows on ANY match and denies a caller with no identity.
+    const identities = new Map()
     try {
       await ctx.shell?.hook?.('create.before', (e) => {
         const env = e?.env ?? {}
-        shellIdentity = { sessionId: env.ORCA_AGENT_SESSION_ID, terminalHandle: env.ORCA_TERMINAL_HANDLE }
-        // lets `mte planner claim` run from this shell record the opencode session id (best effort)
-        if (e?.sessionID && e.env) {
-          e.env.MTE_OPENCODE_SESSION = e.sessionID
+        if (e?.sessionID) {
+          identities.set(e.sessionID, { sessionId: env.ORCA_AGENT_SESSION_ID, terminalHandle: env.ORCA_TERMINAL_HANDLE })
+          // lets `mte planner claim` run from this shell record the opencode session id (best effort)
+          if (e.env) {
+            e.env.MTE_OPENCODE_SESSION = e.sessionID
+          }
         }
       })
     } catch {
@@ -26,6 +29,7 @@ export default {
       if (e?.tool !== 'shell' || typeof command !== 'string' || !command.includes('orchestration')) {
         return
       }
+      const shellIdentity = identities.get(e.sessionID) ?? {}
       const args = [
         'guard',
         '--command',

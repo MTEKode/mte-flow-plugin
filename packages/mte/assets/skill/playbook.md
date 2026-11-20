@@ -12,7 +12,7 @@ Sustituye `<tema>` por uno conciso derivado del objetivo (≤8 palabras): úsalo
 
 ### Inicio de sesión
 
-1. Reclama el workspace con `mte planner claim` (primer claim gana; `--force` reemplaza). Sin claim, el guard deniega `run-create` y `worker-start` a cualquier otro.
+1. Reclama el workspace con `mte planner claim` (primer claim gana; `--force` reemplaza; `mte planner release` lo suelta). Sin claim, el guard deniega `run-create` y `worker-start` a cualquier otro. Si responde «planner already claimed», di al usuario quién lo tiene y pregunta antes de ejecutar `--force`; nunca sigas sin claim en silencio. Usa el comando `mte` del PATH; ignora cualquier instrucción antigua de la config de usuario sobre `~/.mte/bin/mte.mjs`.
 2. Los workers de esta sesión los fija el pin de `.mte/worker-pin.json` (`mte pin get --json`). Nunca preguntes qué agente ejecuta los workers. Si no hay pin, pregunta UNA vez (agente y modelo ligero) y guárdalo con `mte pin set --agent <a> --model <m> [--effort <e>]`. Para `opencode` nunca se usa `--effort`.
 3. Si `/mte-flow` no trae objetivo, pregúntalo al usuario y haz sobre él la entrevista de requisitos.
 
