@@ -1,4 +1,4 @@
-import { findInvocations, getFlag, hasFlag, removeFlags, shellQuote } from './shell-parse.ts'
+import { findInvocations, getFlag, hasFlag, removeFlags, renderBin, shellQuote } from './shell-parse.ts'
 import type { GateKind, Invocation } from './shell-parse.ts'
 import {
   describeIdentity,
@@ -36,7 +36,7 @@ function checkPin(inv: Invocation, pin: WorkerPin): Verdict {
     return ALLOW
   }
   const rest = removeFlags(inv.args, ['agent', 'model', 'effort'])
-  const corrected = [inv.bin, 'orchestration', 'worker-start', ...rest, ...pinFlags(pin)].map(shellQuote).join(' ')
+  const corrected = [renderBin(inv.bin), ...['orchestration', 'worker-start', ...rest, ...pinFlags(pin)].map(shellQuote)].join(' ')
   const task = getFlag(inv.args, 'task')
   const tip = task ? ` (or: mte dispatch --task ${task})` : ''
   return deny(`worker-start must use the worker pin; run: ${corrected}${tip}`)

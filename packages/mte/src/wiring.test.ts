@@ -68,6 +68,52 @@ describe('guard logic', () => {
     }
   })
 
+  it('recognises every spelling of the orca executable and compound commands', () => {
+    const ws = repo()
+    writePlanner(ws, { sessionId: 'planner-1' })
+    const other = { sessionId: 'worker-9' }
+    const task = 'orchestration worker-start --task x'
+    for (const cmd of [
+      `orca ${task}`,
+      `/Applications/Orca.app/Contents/Resources/bin/orca ${task}`,
+      `./bin/orca ${task}`,
+      `"$ORCA_CLI_COMMAND" ${task}`,
+      '${ORCA_CLI_COMMAND} ' + task,
+      `$ORCA_CLI_COMMAND ${task}`,
+      `env FOO=1 orca ${task}`,
+      `env -i /usr/local/bin/orca ${task}`,
+      `cd x && orca ${task}`,
+      `true; orca ${task}`,
+      `echo hi | orca ${task}`,
+      `(cd x; orca ${task})`,
+      `echo "$(orca ${task})"`,
+      `bash -c '"$ORCA_CLI_COMMAND" ${task}'`
+    ]) {
+      assert.equal(evaluateCommand(cmd, other, ws).allow, false, cmd)
+      assert.deepEqual(evaluateCommand(cmd, { sessionId: 'planner-1' }, ws), { allow: true }, cmd)
+    }
+    for (const cmd of ['ls', 'echo orchestration worker-start', 'orca orchestration inbox', 'notorca orchestration worker-start --task x', 'echo "$ORCA_CLI_COMMAND" && ls']) {
+      assert.deepEqual(evaluateCommand(cmd, other, ws), { allow: true }, cmd)
+    }
+  })
+
+  it('builds the corrected command from the orca argv only, never leaking redirections', () => {
+    const ws = repo()
+    const planner = { sessionId: 'p' }
+    writePlanner(ws, planner)
+    writePin(ws, { agent: 'claude', model: 'sonnet', effort: 'high' })
+    for (const tail of ['--json 2>&1; echo $?', '--json 2>/dev/null && echo done', '--json >out.txt 2>&1 | tee x', '--json &> /dev/null; echo "exit=$?"']) {
+      const verdict = evaluateCommand(`orca orchestration worker-start --task x ${tail}`, planner, ws)
+      assert.ok(!verdict.allow, tail)
+      assert.match(verdict.reason, /run: orca orchestration worker-start --task x --json --agent claude --model sonnet --effort high/, tail)
+      const corrected = verdict.reason.replace(/^.*run: /, '')
+      assert.doesNotMatch(corrected, /2>|>|&|;|echo|tee|\$\?/, tail)
+    }
+    const viaVar = evaluateCommand('"$ORCA_CLI_COMMAND" orchestration worker-start --task x', planner, ws)
+    assert.ok(!viaVar.allow)
+    assert.match(viaVar.reason, /run: "\$ORCA_CLI_COMMAND" orchestration worker-start --task x --agent claude/)
+  })
+
   it('matches by terminal handle and ignores callers with no identity', () => {
     const ws = repo()
     writePlanner(ws, { terminalHandle: 'term_1' })
@@ -109,6 +155,29 @@ describe('guard logic', () => {
     assert.doesNotMatch(verdict.reason, /--effort/)
     const ok = 'orca orchestration worker-start --task T-1 --agent opencode --model qwen/x'
     assert.deepEqual(evaluateCommand(ok, planner, ws), { allow: true })
+  })
+})
+
+describe('opencode session identity', () => {
+  it('a planner claimed by opencode session id is allowed on its first gated command with no terminal handle', () => {
+    const ws = repo()
+    assert.equal(mte(ws, ['planner', 'claim', '--opencode-session', 'ses_1', '--terminal-handle', 'term_1']).status, 0)
+    assert.deepEqual(JSON.parse(mte(ws, ['planner', 'show']).stdout), {
+      claimed: true,
+      terminalHandle: 'term_1',
+      opencodeSessionId: 'ses_1',
+      claimedAt: JSON.parse(mte(ws, ['planner', 'show']).stdout).claimedAt
+    })
+    assert.equal(mte(ws, ['guard', '--command', WORKER_START, '--opencode-session', 'ses_1']).status, 0)
+    assert.equal(mte(ws, ['guard', '--command', WORKER_START, '--opencode-session', 'ses_2']).status, 2)
+    // any identity matching is enough
+    assert.equal(mte(ws, ['guard', '--command', WORKER_START, '--opencode-session', 'ses_2', '--terminal-handle', 'term_1']).status, 0)
+  })
+
+  it('claim picks the opencode session up from MTE_OPENCODE_SESSION', () => {
+    const ws = repo()
+    assert.equal(mte(ws, ['planner', 'claim'], { MTE_OPENCODE_SESSION: 'ses_env' }).status, 0)
+    assert.equal(readPlanner(ws)?.opencodeSessionId, 'ses_env')
   })
 })
 
@@ -162,12 +231,26 @@ describe('pin, planner and dispatch cli', () => {
   })
 })
 
+describe('dispatch executable', () => {
+  it('uses ORCA_CLI_COMMAND when set, else orca on PATH', () => {
+    const ws = repo()
+    mte(ws, ['planner', 'claim', '--session-id', 'p'])
+    const viaVar = mte(ws, ['dispatch', '--task', 'T-9'], { ORCA_CLI_COMMAND: join(bin, 'fake-orca'), ORCA_AGENT_SESSION_ID: 'p' })
+    assert.equal(viaVar.stdout.trim(), 'ORCA orchestration worker-start --task T-9')
+    const dir = mkdtempSync(join(root, 'path-'))
+    writeFileSync(join(dir, 'orca'), '#!/bin/sh\necho "PATHORCA $@"\n')
+    chmodSync(join(dir, 'orca'), 0o755)
+    const viaPath = mte(ws, ['dispatch', '--task', 'T-9'], { PATH: `${dir}:${process.env.PATH}`, ORCA_CLI_COMMAND: '', ORCA_AGENT_SESSION_ID: 'p' })
+    assert.equal(viaPath.stdout.trim(), 'PATHORCA orchestration worker-start --task T-9')
+  })
+})
+
 describe('mte install', () => {
   const files = [
-    '.claude/skills/mte/SKILL.md',
-    '.claude/skills/mte/playbook.md',
-    '.agents/skills/mte/SKILL.md',
-    '.agents/skills/mte/playbook.md',
+    '.claude/skills/mte-flow/SKILL.md',
+    '.claude/skills/mte-flow/playbook.md',
+    '.agents/skills/mte-flow/SKILL.md',
+    '.agents/skills/mte-flow/playbook.md',
     '.claude/settings.json',
     '.mcp.json',
     'opencode.json',
@@ -207,7 +290,33 @@ describe('mte install', () => {
     assert.deepEqual(oc.mcp.servers['mte-memory'], { type: 'local', command: ['mte', 'memory', '--role', 'orchestrator'] })
     assert.ok(oc.mcp.servers.other)
     assert.deepEqual(readFileSync(join(ws, '.gitignore'), 'utf8').split('\n').slice(0, 2), ['node_modules', '.mte/memory.db'])
-    assert.equal(readFileSync(join(ws, '.claude/skills/mte/SKILL.md'), 'utf8'), readFileSync(join(ws, '.agents/skills/mte/SKILL.md'), 'utf8'))
+    assert.equal(readFileSync(join(ws, '.claude/skills/mte-flow/SKILL.md'), 'utf8'), readFileSync(join(ws, '.agents/skills/mte-flow/SKILL.md'), 'utf8'))
+  })
+
+  it('writes skills under mte-flow, removes only its own old mte skill, leaves a foreign one', () => {
+    const ws = repo()
+    const asset = (f: string) => readFileSync(join(ASSETS, 'skill', f), 'utf8')
+    const ours = repo()
+    const old = (dir: string, skill: string, playbook = 'old playbook') => {
+      mkdirSync(join(dir, '.claude/skills/mte'), { recursive: true })
+      writeFileSync(join(dir, '.claude/skills/mte/SKILL.md'), skill)
+      writeFileSync(join(dir, '.claude/skills/mte/playbook.md'), playbook)
+    }
+    // a copy of the current generated SKILL.md counts as ours (marker); a hand-written one does not
+    old(ours, asset('SKILL.md'), asset('playbook.md'))
+    assert.equal(mte(ours, ['install', '--agents', 'claude']).status, 0)
+    assert.ok(!existsSync(join(ours, '.claude/skills/mte')))
+    assert.equal(readFileSync(join(ours, '.claude/skills/mte-flow/SKILL.md'), 'utf8'), asset('SKILL.md'))
+    assert.match(asset('SKILL.md'), /^name: mte-flow$/m)
+    assert.match(asset('SKILL.md'), /generated by mte install/)
+
+    old(ws, '---\nname: mte\n---\nmy own skill\n')
+    assert.equal(mte(ws, ['install', '--agents', 'claude,opencode']).status, 0)
+    assert.equal(readFileSync(join(ws, '.claude/skills/mte/SKILL.md'), 'utf8'), '---\nname: mte\n---\nmy own skill\n')
+    assert.equal(readFileSync(join(ws, '.claude/skills/mte/playbook.md'), 'utf8'), 'old playbook')
+    assert.ok(existsSync(join(ws, '.claude/skills/mte-flow/SKILL.md')))
+    assert.ok(existsSync(join(ws, '.agents/skills/mte-flow/playbook.md')))
+    assert.ok(!existsSync(join(ws, '.agents/skills/mte')))
   })
 
   it('refuses to clobber an invalid JSON file', () => {
@@ -257,6 +366,44 @@ describe('mte install', () => {
     assert.doesNotThrow(() => exec('ls'))
     hooks['create.before']?.({ command: 'x', env: { ORCA_AGENT_SESSION_ID: 'planner-1' } })
     assert.doesNotThrow(() => exec('orca orchestration worker-start --task x'))
+  })
+})
+
+describe('opencode plugin cwd', () => {
+  it('resolves the project dir from ctx.location.directory (execute.before input only has command) and denies', async () => {
+    const ws = repo()
+    mte(ws, ['install', '--agents', 'opencode'])
+    mte(ws, ['planner', 'claim', '--session-id', 'planner-1'])
+    const mod = await import(pathToFileURL(join(ws, '.opencode/plugins/mte-guard/index.js')).href)
+    const hooks: Record<string, (e: unknown) => void> = {}
+    const hook = (name: string, fn: (e: unknown) => void) => {
+      hooks[name] = fn
+    }
+    // no ctx.directory, no input.cwd; run from a cwd that has no .mte (service cwd) so only ctx.location can find the workspace
+    const prev = process.cwd()
+    process.chdir(tmpdir())
+    try {
+      await mod.default.setup({ location: { directory: ws }, tool: { hook }, shell: { hook } })
+      hooks['create.before']?.({ command: 'x', env: { ORCA_AGENT_SESSION_ID: 'someone-else' } })
+      const exec = (command: string, sessionID: string) => hooks['execute.before']?.({ tool: 'shell', sessionID, input: { command } })
+      assert.throws(() => exec('orca orchestration worker-start --task x', 'ses_other'), /planner/)
+      assert.throws(() => exec('"$ORCA_CLI_COMMAND" orchestration worker-start --task x', 'ses_other'), /planner/)
+    } finally {
+      process.chdir(prev)
+    }
+  })
+
+  it('allows the opencode-claimed planner before any shell create.before event fired', async () => {
+    const ws = repo()
+    mte(ws, ['install', '--agents', 'opencode'])
+    mte(ws, ['planner', 'claim', '--terminal-handle', 'term_1', '--opencode-session', 'ses_planner'])
+    const mod = await import(pathToFileURL(join(ws, '.opencode/plugins/mte-guard/index.js')).href)
+    const hooks: Record<string, (e: unknown) => void> = {}
+    await mod.default.setup({ location: { directory: ws }, tool: { hook: (n: string, f: (e: unknown) => void) => (hooks[n] = f) } })
+    const exec = (sessionID: string) =>
+      hooks['execute.before']?.({ tool: 'shell', sessionID, input: { command: 'orca orchestration worker-start --task x' } })
+    assert.doesNotThrow(() => exec('ses_planner'))
+    assert.throws(() => exec('ses_other'), /planner/)
   })
 })
 

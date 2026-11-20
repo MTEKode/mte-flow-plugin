@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, rmSync, rmdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { errorMessage } from '../error-message.ts'
 import { resolveWorkspaceRoot, usageError } from './flags.ts'
@@ -63,9 +64,43 @@ function mergeJson(path: string, edit: (doc: Json) => void): void {
   writeIfChanged(path, `${JSON.stringify(doc, null, 2)}\n`)
 }
 
+const SKILL_DIR = 'mte-flow'
+/** SHA-256 of the SKILL.md / playbook.md that pre-rename `mte install` wrote into `<dir>/mte/`. */
+const LEGACY_SHA256 = {
+  'SKILL.md': 'f5e4adfbd7c00d2050aea1b880da36f80be513effce757c6024a8ddddfaf7e36',
+  'playbook.md': 'ecce4bbc2fc685f534c90fe5564bada5fbb643adc6feb673221beaa9c5ea4393'
+}
+
+const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex')
+
+/** True only for content we generated (a pre-rename release, or the current asset carrying the generated-by marker). */
+function isOurs(file: 'SKILL.md' | 'playbook.md', text: string): boolean {
+  return sha256(text) === LEGACY_SHA256[file] || text === asset(`skill/${file}`)
+}
+
+/** Removes a previously installed `<dir>/mte` skill, file by file, only where byte-identical to ours; foreign content stays. */
+function removeLegacySkill(ws: string, dir: string): void {
+  const legacy = join(ws, dir, 'mte')
+  const skill = join(legacy, 'SKILL.md')
+  if (!existsSync(skill) || !isOurs('SKILL.md', readFileSync(skill, 'utf8'))) {
+    return
+  }
+  rmSync(skill)
+  const playbook = join(legacy, 'playbook.md')
+  if (existsSync(playbook) && isOurs('playbook.md', readFileSync(playbook, 'utf8'))) {
+    rmSync(playbook)
+  }
+  try {
+    rmdirSync(legacy) // only succeeds when empty
+  } catch {
+    // user files remain
+  }
+}
+
 function installSkill(ws: string, dir: string): void {
+  removeLegacySkill(ws, dir)
   for (const file of ['SKILL.md', 'playbook.md']) {
-    writeIfChanged(join(ws, dir, 'mte', file), asset(`skill/${file}`))
+    writeIfChanged(join(ws, dir, SKILL_DIR, file), asset(`skill/${file}`))
   }
 }
 

@@ -1,8 +1,8 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-/** Who is calling: Orca session id (native chat) and/or terminal handle (terminal agents). */
-export type Identity = { sessionId?: string; terminalHandle?: string }
+/** Who is calling: Orca session id (native chat), terminal handle (terminal agents) and/or opencode session id. */
+export type Identity = { sessionId?: string; terminalHandle?: string; opencodeSessionId?: string }
 export type WorkerPin = { agent: string; model: string; effort?: string }
 export type PlannerClaim = Identity & { claimedAt: string }
 
@@ -20,28 +20,45 @@ export function normalizeHandle(raw: string | undefined): string | undefined {
 }
 
 export function identityFromEnv(env: NodeJS.ProcessEnv): Identity {
-  return withIdentity(env.ORCA_AGENT_SESSION_ID, env.ORCA_TERMINAL_HANDLE)
+  return withIdentity(env.ORCA_AGENT_SESSION_ID, env.ORCA_TERMINAL_HANDLE, env.MTE_OPENCODE_SESSION)
 }
 
-export function withIdentity(sessionId: string | undefined, terminalHandle: string | undefined): Identity {
+export function withIdentity(
+  sessionId: string | undefined,
+  terminalHandle: string | undefined,
+  opencodeSessionId?: string
+): Identity {
   const session = normalizeSessionId(sessionId)
   const handle = normalizeHandle(terminalHandle)
-  return { ...(session ? { sessionId: session } : {}), ...(handle ? { terminalHandle: handle } : {}) }
+  const opencode = normalizeHandle(opencodeSessionId)
+  return {
+    ...(session ? { sessionId: session } : {}),
+    ...(handle ? { terminalHandle: handle } : {}),
+    ...(opencode ? { opencodeSessionId: opencode } : {})
+  }
 }
 
 export function hasIdentity(identity: Identity): boolean {
-  return identity.sessionId !== undefined || identity.terminalHandle !== undefined
+  return (
+    identity.sessionId !== undefined || identity.terminalHandle !== undefined || identity.opencodeSessionId !== undefined
+  )
 }
 
+/** Any shared identity (terminal handle, agent session, opencode session) is the same caller. */
 export function sameCaller(claim: Identity, caller: Identity): boolean {
   return (
     (claim.sessionId !== undefined && claim.sessionId === caller.sessionId) ||
-    (claim.terminalHandle !== undefined && claim.terminalHandle === caller.terminalHandle)
+    (claim.terminalHandle !== undefined && claim.terminalHandle === caller.terminalHandle) ||
+    (claim.opencodeSessionId !== undefined && claim.opencodeSessionId === caller.opencodeSessionId)
   )
 }
 
 export function describeIdentity(identity: Identity): string {
-  return [identity.sessionId && `session ${identity.sessionId}`, identity.terminalHandle && `terminal ${identity.terminalHandle}`]
+  return [
+    identity.sessionId && `session ${identity.sessionId}`,
+    identity.terminalHandle && `terminal ${identity.terminalHandle}`,
+    identity.opencodeSessionId && `opencode session ${identity.opencodeSessionId}`
+  ]
     .filter(Boolean)
     .join(' / ')
 }
@@ -102,7 +119,7 @@ export function readPlanner(ws: string): PlannerClaim | null {
   if (raw === null) {
     return null
   }
-  const identity = withIdentity(optString(raw.sessionId), optString(raw.terminalHandle))
+  const identity = withIdentity(optString(raw.sessionId), optString(raw.terminalHandle), optString(raw.opencodeSessionId))
   return hasIdentity(identity) ? { ...identity, claimedAt: optString(raw.claimedAt) ?? '' } : null
 }
 
