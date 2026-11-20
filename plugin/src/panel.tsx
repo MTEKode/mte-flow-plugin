@@ -91,7 +91,9 @@ const focus = (workspace: string) =>
 export function setup(ctx: PanelContext): void {
   ctx.subscriptions.push(
     plugin.on('state.changed', () => void refresh()),
-    on('agent.status.changed', () => void refresh())
+    on('agent.status.changed', () => void refresh()),
+    // The focused workspace changed: the shown name/path must follow it, never a stale one.
+    on('workspace.changed', () => void refresh())
   )
   void refresh()
 }
@@ -177,7 +179,7 @@ export default function Panel() {
           </Button>
         </Row>
         <Text muted size="xs">
-          Planner in a native chat? Type <Code>/mte your goal</Code> there instead.
+          Planner in a native chat? Type <Code>/mte-flow your goal</Code> there instead.
         </Text>
       </Stack>
 

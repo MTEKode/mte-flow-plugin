@@ -1,16 +1,19 @@
 // Pure logic for the MTE Flow plugin. No Orca imports: every side effect comes in through `deps`
 // ({ exec, host, settings }) so the tests can stub child_process and the host API.
 import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 // agent.launch and workspace.create cap prompts at 4096 chars; stay well under it.
 export const PROMPT_MAX = 4000
 export const TRUNCATION_MARKER = '\n[goal truncated]'
 export const INSTALL_HINT = 'npm i -g @mtekode/mte'
-export const ORCA_APP_BIN = '/Applications/Orca.app/Contents/Resources/bin/orca'
 
-/** `/mte <goal>`, with the goal cut (and marked) so the whole prompt fits the host cap. */
+/** `/mte-flow <goal>`, with the goal cut (and marked) so the whole prompt fits the host cap. */
 export function buildBootstrapPrompt(goal) {
-  const prefix = '/mte '
+  const prefix = '/mte-flow '
   const text = String(goal).trim()
   if (prefix.length + text.length <= PROMPT_MAX) {
     return prefix + text
@@ -38,12 +41,12 @@ export const mteMissingError = (bin) =>
   )
 
 /** execFile as a promise: resolves { code, stdout, stderr } (never rejects on a non-zero exit); rejects with ENOENT when the binary is missing. */
-export function defaultExec(file, args, { cwd, timeoutMs = 60_000 } = {}) {
+export function defaultExec(file, args, { cwd, env, timeoutMs = 60_000 } = {}) {
   return new Promise((resolve, reject) => {
     execFile(
       file,
       args,
-      { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' },
+      { cwd, env: env ? { ...process.env, ...env } : undefined, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' },
       (error, stdout, stderr) => {
         if (error && error.code === 'ENOENT') {
           reject(error)
@@ -55,6 +58,41 @@ export function defaultExec(file, args, { cwd, timeoutMs = 60_000 } = {}) {
       }
     )
   })
+}
+
+/**
+ * The `orca` CLI and profile of the Orca app that hosts this worker. The host forks the worker from
+ * its own Electron binary (`process.execPath`, ELECTRON_RUN_AS_NODE) and scrubs ORCA_* from its env,
+ * and an installed plugin lives at `<userData>/plugins/<pluginKey>/<contentHash>/`; so the app bundle
+ * and the profile can both be derived without guessing. With no `ORCA_USER_DATA_PATH` the CLI would
+ * talk to the default profile, which is the wrong app whenever two Orca apps are installed.
+ * Dev-linked plugins sit outside `<userData>/plugins`: they get the bundle's CLI and its default profile.
+ */
+export function resolveOrcaCli({
+  execPath = process.execPath,
+  platform = process.platform,
+  moduleUrl = import.meta.url,
+  exists = existsSync
+} = {}) {
+  const exeDir = dirname(execPath)
+  const candidates =
+    platform === 'darwin'
+      ? [join(exeDir, '..', 'Resources', 'bin', 'orca')]
+      : platform === 'win32'
+        ? [join(exeDir, 'resources', 'bin', 'orca.exe')]
+        : [join(exeDir, 'resources', 'bin', 'orca-ide'), join(exeDir, 'resources', 'bin', 'orca')]
+  const bundled = candidates.map((c) => resolve(c)).find((c) => exists(c))
+  let env = {}
+  try {
+    const here = moduleUrl.startsWith('file:') ? fileURLToPath(moduleUrl) : moduleUrl
+    const match = /^(.*)[\\/]plugins[\\/][^\\/]+[\\/][0-9a-f]{32,}[\\/]/.exec(here)
+    if (match?.[1]) {
+      env = { ORCA_USER_DATA_PATH: match[1] }
+    }
+  } catch {
+    // not a file URL: no profile to pin
+  }
+  return { bin: bundled ?? 'orca', env }
 }
 
 /** Reads the six plugin settings, with their defaults. */
@@ -86,6 +124,19 @@ export async function resolveWorkspace(host) {
 
 const fail = (stage, code, message) => ({ ok: false, error: { stage, code, message } })
 
+/** Refuses targets that must never receive MTE files: the home directory or anything that is not a git checkout. */
+export function checkWorkspaceTarget(deps, ws) {
+  const exists = deps.exists ?? existsSync
+  const home = resolve(deps.homedir ?? homedir())
+  if (!ws.path || resolve(ws.path) === home) {
+    return fail('workspace', 'workspace_is_home', 'The focused workspace is the home directory; open a project workspace first.')
+  }
+  if (!exists(join(ws.path, '.git'))) {
+    return fail('workspace', 'not_git_repo', `${ws.path} is not a git repository; open a project workspace first.`)
+  }
+  return null
+}
+
 /** Runs `bin args` and maps ENOENT / non-zero exits to a result error. Returns null on success. */
 async function runMte(deps, settings, stage, args, cwd) {
   let res
@@ -104,9 +155,9 @@ async function runMte(deps, settings, stage, args, cwd) {
   return null
 }
 
-export function installArgs(settings, agents) {
-  const list = [...new Set(agents ?? [settings.plannerAgent, settings.workerAgent])]
-  return ['install', '--agents', list.join(',')]
+/** Always wire both agents: the planner and worker agents are chosen per run, and install is idempotent. */
+export function installArgs() {
+  return ['install', '--agents', 'claude,opencode']
 }
 
 export function pinArgs(settings) {
@@ -128,11 +179,15 @@ export async function installInWorkspace(deps) {
   if (!ws) {
     return fail('workspace', 'no_workspace', 'No workspace is focused.')
   }
-  const err = await runMte(deps, settings, 'install', installArgs(settings), ws.path)
+  const refused = checkWorkspaceTarget(deps, ws)
+  if (refused) {
+    return refused
+  }
+  const err = await runMte(deps, settings, 'install', installArgs(), ws.path)
   return err ?? { ok: true, workspace: ws }
 }
 
-/** Start a run with a terminal planner: `mte install`, `mte pin set`, then `agent.launch` with `/mte <goal>`. */
+/** Start a run with a terminal planner: `mte install`, `mte pin set`, then the planner launch with `/mte-flow <goal>`. */
 export async function startRun(deps, { goal, plannerAgent, plannerModel } = {}) {
   const settings = await readSettings(deps.host)
   if (plannerAgent) {
@@ -148,7 +203,11 @@ export async function startRun(deps, { goal, plannerAgent, plannerModel } = {}) 
   if (!ws) {
     return fail('workspace', 'no_workspace', 'No workspace is focused.')
   }
-  const installErr = await runMte(deps, settings, 'install', installArgs(settings), ws.path)
+  const refused = checkWorkspaceTarget(deps, ws)
+  if (refused) {
+    return refused
+  }
+  const installErr = await runMte(deps, settings, 'install', installArgs(), ws.path)
   if (installErr) {
     return installErr
   }
@@ -161,15 +220,38 @@ export async function startRun(deps, { goal, plannerAgent, plannerModel } = {}) 
   }
   const prompt = buildBootstrapPrompt(goal)
   try {
-    const { terminalId } = await deps.host.call('agent.launch', {
-      workspaceId: ws.id,
-      agent: settings.plannerAgent,
-      prompt
-    })
+    const terminalId = await launchPlanner(deps, ws, settings, prompt)
     return { ok: true, workspace: ws, terminalId, pinned: Boolean(pin), truncated: prompt.endsWith(TRUNCATION_MARKER) }
   } catch (error) {
     return fail('launch', String(error?.code ?? 'action_failed'), String(error?.message ?? error))
   }
+}
+
+/**
+ * Starts the planner terminal with its prompt. The host's `agent.launch` opens the terminal and then
+ * sends the prompt in a second, fire-and-forget call whose failure is only logged (QA: the prompt never
+ * arrived), so the orca CLI's single `agent launch --prompt` call is the primary path. The host API is
+ * only the fallback when the CLI cannot be found.
+ */
+async function launchPlanner(deps, ws, settings, prompt) {
+  const args = ['agent', 'launch', '--agent', settings.plannerAgent, '--worktree', `path:${ws.path}`, '--surface', 'terminal', '--prompt', prompt]
+  if (settings.plannerModel) {
+    args.push('--model', settings.plannerModel)
+  }
+  try {
+    const result = await orcaJson(deps, args)
+    const handle = result?.outcome?.handle
+    if (!handle) {
+      throw new MteError('orca_failed', 'The orca CLI did not report the launched terminal.')
+    }
+    return handle
+  } catch (error) {
+    if (error?.code !== 'orca_missing') {
+      throw error
+    }
+  }
+  const { terminalId } = await deps.host.call('agent.launch', { workspaceId: ws.id, agent: settings.plannerAgent, prompt })
+  return terminalId
 }
 
 /** `mte` present? ENOENT is the only "missing" signal; any exit status means the binary ran. */
@@ -185,21 +267,17 @@ export async function checkMte(deps, settings) {
   }
 }
 
-/** Runs the stock `orca` CLI (it finds the app through its own runtime file, so the scrubbed worker env is fine). */
+/** Runs the `orca` CLI of the hosting app, on the hosting app's profile (see resolveOrcaCli). */
 async function orcaJson(deps, args) {
+  const { bin, env } = deps.orcaCli ?? { bin: 'orca', env: {} }
   let res
-  for (const bin of deps.orcaBins ?? ['orca', ORCA_APP_BIN]) {
-    try {
-      res = await deps.exec(bin, [...args, '--json'], { timeoutMs: 20_000 })
-      break
-    } catch (error) {
-      if (!(error && error.code === 'ENOENT')) {
-        throw error
-      }
+  try {
+    res = await deps.exec(bin, [...args, '--json'], { timeoutMs: 20_000, env })
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      throw new MteError('orca_missing', `The orca CLI (${bin}) was not found.`)
     }
-  }
-  if (!res) {
-    throw new MteError('orca_missing', 'The `orca` CLI was not found on PATH.')
+    throw error
   }
   if (res.code !== 0) {
     throw new MteError('orca_failed', (res.stderr || res.stdout || 'orca failed').trim().slice(0, 300))

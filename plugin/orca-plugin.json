@@ -47,7 +47,7 @@
       {
         "key": "plannerModel",
         "title": "Planner model",
-        "description": "Prefilled in the start-run form. Orca's agent.launch cannot select a model, so the agent's own default applies.",
+        "description": "Prefilled in the start-run form and passed to the planner launch. Leave empty for the agent's own default.",
         "type": "string",
         "placeholder": "agent default",
         "default": ""
