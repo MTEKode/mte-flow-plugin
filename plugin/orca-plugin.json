@@ -80,7 +80,7 @@
       {
         "key": "mteBin",
         "title": "mte binary",
-        "description": "Command or absolute path of the MTE CLI. Install it with `npm i -g https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v0.1.0/mtekode-mte-0.1.0.tgz`; from a checkout of https://github.com/MTEKode/mte-flow-plugin use `cd packages/mte && npm link`.",
+        "description": "Command or absolute path of the MTE CLI. Install it with `npm i -g https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v0.2.0/mtekode-mte-0.2.0.tgz`; from a checkout of https://github.com/MTEKode/mte-flow-plugin use `cd packages/mte && npm link`.",
         "type": "string",
         "default": "mte"
       }

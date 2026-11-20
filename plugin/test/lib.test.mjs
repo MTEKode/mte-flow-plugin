@@ -174,7 +174,7 @@ test('missing mte binary yields the mte_missing error with install instructions'
   for (const result of [await startRun(deps, { goal: 'x' }), await installInWorkspace(deps)]) {
     assert.equal(result.ok, false)
     assert.equal(result.error.code, 'mte_missing')
-    assert.match(result.error.message, /npm i -g https:\/\/github\.com\/MTEKode\/mte-flow-plugin\/releases\/download\/mte-v0\.1\.0\/mtekode-mte-0\.1\.0\.tgz/)
+    assert.match(result.error.message, /npm i -g https:\/\/github\.com\/MTEKode\/mte-flow-plugin\/releases\/download\/mte-v0\.2\.0\/mtekode-mte-0\.2\.0\.tgz/)
     assert.doesNotMatch(result.error.message, /@mtekode\/mte/)
   }
   assert.ok(!calls.some((c) => c.args?.[0] === 'agent' || c.method === 'agent.launch'))
@@ -310,5 +310,5 @@ test('checkMte: a non-zero --version exit is unusable, with the stderr first lin
   assert.equal(res.unusable, true)
   assert.match(res.message, /ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING/)
   assert.doesNotMatch(res.message, /more/)
-  assert.deepEqual(await checkMte({ exec: async () => ({ code: 0, stdout: '0.1.0', stderr: '' }) }, { mteBin: 'mte' }), { missing: false })
+  assert.deepEqual(await checkMte({ exec: async () => ({ code: 0, stdout: '0.2.0', stderr: '' }) }, { mteBin: 'mte' }), { missing: false })
 })
