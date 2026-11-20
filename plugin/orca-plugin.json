@@ -1,0 +1,96 @@
+{
+  "manifestVersion": 2,
+  "execution": "trusted-worker",
+  "id": "mte-flow",
+  "name": "MTE Flow",
+  "version": "0.1.0",
+  "description": "Start and watch MTE Flow runs on stock Orca: install MTE in a workspace, pin the worker agent, launch the planner and follow runs and workers.",
+  "engines": {
+    "orca": ">=1.4.248"
+  },
+  "pluginApi": 1,
+  "main": "worker/main.mjs",
+  "contributes": {
+    "panels": [
+      {
+        "id": "mte",
+        "title": "MTE Flow",
+        "icon": "rocket",
+        "entry": "src/panel.tsx",
+        "ui": "components"
+      }
+    ],
+    "commands": [
+      { "id": "mte.startRun", "title": "MTE: Start run", "when": "workspace" },
+      { "id": "mte.install", "title": "MTE: Install in workspace", "when": "workspace" },
+      { "id": "mte.openPanel", "title": "MTE: Open panel" }
+    ],
+    "statusBarItems": [
+      {
+        "id": "runs",
+        "text": "MTE",
+        "icon": "rocket",
+        "tooltip": "MTE Flow: active workers. Click to open the panel.",
+        "command": "mte.openPanel"
+      }
+    ],
+    "settings": [
+      {
+        "key": "plannerAgent",
+        "title": "Planner agent",
+        "description": "Agent that runs the MTE planner in a terminal.",
+        "type": "string",
+        "enum": ["claude", "opencode"],
+        "enumLabels": ["Claude Code", "opencode"],
+        "default": "claude"
+      },
+      {
+        "key": "plannerModel",
+        "title": "Planner model",
+        "description": "Prefilled in the start-run form. Orca's agent.launch cannot select a model, so the agent's own default applies.",
+        "type": "string",
+        "placeholder": "agent default",
+        "default": ""
+      },
+      {
+        "key": "workerAgent",
+        "title": "Worker agent",
+        "description": "Agent pinned for the workers the planner dispatches.",
+        "type": "string",
+        "enum": ["claude", "opencode"],
+        "enumLabels": ["Claude Code", "opencode"],
+        "default": "claude"
+      },
+      {
+        "key": "workerModel",
+        "title": "Worker model",
+        "description": "Pinned with `mte pin set`. Leave empty to skip the pin.",
+        "type": "string",
+        "placeholder": "e.g. claude-sonnet-5-5",
+        "default": ""
+      },
+      {
+        "key": "workerEffort",
+        "title": "Worker effort",
+        "description": "Reasoning effort for the pinned worker. Ignored for opencode.",
+        "type": "string",
+        "placeholder": "e.g. high (optional)",
+        "default": ""
+      },
+      {
+        "key": "mteBin",
+        "title": "mte binary",
+        "description": "Command or absolute path of the MTE CLI. Install it with `npm i -g @mtekode/mte`.",
+        "type": "string",
+        "default": "mte"
+      }
+    ]
+  },
+  "capabilities": [
+    { "kind": "settings:own" },
+    { "kind": "workspace:read" },
+    { "kind": "workspace:write" },
+    { "kind": "agent:read" },
+    { "kind": "agent:launch" }
+  ]
+}
