@@ -10,7 +10,10 @@
   h1 { font-size: 14px; font-weight: 600; margin: 0; }
   .row { display: flex; align-items: center; gap: 8px; }
   .between { justify-content: space-between; }
-  .stack { display: flex; flex-direction: column; gap: 12px; }
+  .stack { display: flex; flex-direction: column; gap: 14px; }
+  #f-worker { margin-top: -6px; }
+  .actions { margin-top: 4px; }
+  .section { margin-top: 10px; }
   .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; position: relative; }
   label, .label { font-size: 12px; font-weight: 500; color: var(--orca-muted-foreground); }
   .muted { color: var(--orca-muted-foreground); font-size: 12px; }
@@ -63,14 +66,14 @@
     <button type="button" class="picker" id="worker-btn" aria-haspopup="listbox"><span></span><span aria-hidden="true">▾</span></button>
   </div>
 
-  <div class="row">
+  <div class="row actions">
     <button type="button" class="primary" id="start">Start run</button>
     <button type="button" id="install">Install MTE in this workspace</button>
     <button type="button" id="repair">Repair setup</button>
   </div>
   <div class="muted" id="ws"></div>
 
-  <div class="stack" style="gap:6px">
+  <div class="stack section" style="gap:6px">
     <span class="label">Workers</span>
     <div class="workers" id="workers"></div>
   </div>
