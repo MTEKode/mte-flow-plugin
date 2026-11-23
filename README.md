@@ -44,7 +44,9 @@ Tests: `cd packages/mte && npm test` (or `node --test 'packages/mte/**/*.test.ts
 
 ## Orca plugin
 
-`plugin/` is the `mtekode.mte-flow` Orca plugin (id `mte-flow`, trusted-worker, no build step). It only drives the `mte` CLI and stock Orca APIs.
+The repo root is the `mtekode.mte-flow` Orca plugin (`orca-plugin.json`, id `mte-flow`, trusted-worker, no build step); the `mte` CLI lives in `packages/mte`. The plugin only drives the `mte` CLI and stock Orca APIs.
+
+Install: in Orca, *Settings > Plugins > Install from Git URL* with `https://github.com/MTEKode/mte-flow-plugin` (or `orca plugin install https://github.com/MTEKode/mte-flow-plugin`).
 
 - **Self-setup**: on activation the worker runs `mte --version`; when `mte` is missing or older than `REQUIRED_MTE_VERSION` (0.3.0) it checks `node` >= 24 and `npm` on PATH (otherwise the panel shows exact instructions and nothing is executed), runs `npm i -g <release tarball>` (never sudo; npm's error text is shown, e.g. for a global prefix you cannot write), then `mte install --user`. Completion is stored in plugin storage keyed by mte version, so it runs once per version; the **Repair setup** button forces it. Progress shows in the panel and status bar. Plugins cannot read Orca settings, so the panel carries a dismissible reminder to set *Settings > Orchestration > Nested worker depth* = 1.
 - **Panel "MTE Flow"**: start-run form (goal, planner agent/model prefilled from settings, target = focused workspace), an "Install MTE in this workspace" button, and workers/runs read from `orca orchestration worker-list` / `run-list` with a Focus button per worker.
@@ -56,10 +58,10 @@ Tests: `cd packages/mte && npm test` (or `node --test 'packages/mte/**/*.test.ts
 - Requires the `mte` CLI: `npm i -g https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v0.3.0/mtekode-mte-0.3.0.tgz` (dev alternative: clone this repo, then `cd packages/mte && npm run build && npm link`). The panel shows this when `mte` is missing or `mte --version` exits non-zero.
 - `plannerModel` is passed to the planner launch (`--model`); empty means the agent's default. An empty `workerModel` skips `mte pin set`.
 
-Develop and test (from `plugin/`; none of these install into your Orca profile):
+Develop and test (from the repo root; none of these install into your Orca profile):
 
 ```sh
 orca plugin validate .
 orca plugin check .
-orca plugin test .            # or: node --test "plugin/**/*.test.mjs"
+orca plugin test .            # or: node --test "test/**/*.test.mjs"
 ```

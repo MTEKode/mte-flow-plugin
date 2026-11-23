@@ -283,7 +283,7 @@ test('orca CLI and profile are derived from the hosting app (execPath + install 
   assert.equal(linux.env.ORCA_USER_DATA_PATH, '/home/me/.config/orca')
   // dev-linked plugin (outside <userData>/plugins) and missing bundle: PATH `orca`, default profile
   assert.deepEqual(
-    resolveOrcaCli({ execPath: '/x/Orca', platform: 'darwin', moduleUrl: 'file:///dev/plugin/worker/lib.mjs', exists: () => false }),
+    resolveOrcaCli({ execPath: '/x/Orca', platform: 'darwin', moduleUrl: 'file:///dev/mte-flow/worker/lib.mjs', exists: () => false }),
     { bin: 'orca', env: {} }
   )
 })
@@ -439,5 +439,5 @@ test('manifest defaults: claude planner, claude worker, sonnet model, no effort;
   const defaults = Object.fromEntries(manifest.contributes.settings.map((s) => [s.key, s.default]))
   assert.deepEqual([defaults.plannerAgent, defaults.workerAgent, defaults.workerModel, defaults.workerEffort], ['claude', 'claude', 'sonnet', ''])
   assert.ok(manifest.capabilities.some((c) => c.kind === 'storage:own'))
-  assert.equal(manifest.version, '0.2.0')
+  assert.equal(manifest.version, '0.3.0')
 })
