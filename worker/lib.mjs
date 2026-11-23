@@ -3,7 +3,7 @@
 import { execFile } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 // agent.launch and workspace.create cap prompts at 4096 chars; stay well under it.
@@ -55,13 +55,55 @@ export const mteMissingError = (bin) =>
     `The \`${bin}\` binary was not found. Install it with \`${INSTALL_HINT}\` or set "mte binary" in the plugin settings.`
   )
 
+const WIN_META = /([()\][%!^"`<>&|;, *?])/g
+
+/** One argument quoted for a `cmd.exe /c` line that runs a .cmd shim (cross-spawn's rules: the shim re-parses `%*`, so metacharacters are escaped twice). */
+export function winQuote(arg) {
+  const quoted = `"${String(arg).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1')}"`
+  return quoted.replace(WIN_META, '^$1').replace(WIN_META, '^$1')
+}
+
+/**
+ * How to start `file` on Windows, where npm-installed CLIs (`mte`, `npm`, `opencode`) are `.cmd` shims that Node will
+ * not start by bare name: the full path of the .exe, or a verbatim `cmd.exe /d /s /c` line for a shim. Null when
+ * nothing on PATH matches. Never goes through a shell with unquoted text: goals and model ids are user input.
+ */
+export function windowsSpawnPlan(file, args, { env = process.env, exists = existsSync } = {}) {
+  const get = (name) => env[Object.keys(env).find((k) => k.toLowerCase() === name) ?? '']
+  const exts = (get('pathext') || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+  const dirs = /[\\/]/.test(file) ? [''] : (get('path') || '').split(';').filter(Boolean)
+  let found = null
+  for (const dir of dirs) {
+    const base = dir ? win32.join(dir, file) : file
+    found = [base, ...exts.map((e) => base + e)].find((c) => /\.[^\\/.]+$/.test(c) && exists(c)) ?? null
+    if (found) {
+      break
+    }
+  }
+  if (!found) {
+    return null
+  }
+  if (!/\.(cmd|bat)$/i.test(found)) {
+    return { command: found, args, verbatim: false }
+  }
+  const line = [found.replace(WIN_META, '^$1'), ...args.map(winQuote)].join(' ')
+  return { command: get('comspec') || 'cmd.exe', args: ['/d', '/s', '/c', `"${line}"`], verbatim: true }
+}
+
 /** execFile as a promise: resolves { code, stdout, stderr } (never rejects on a non-zero exit); rejects with ENOENT when the binary is missing. */
 export function defaultExec(file, args, { cwd, env, timeoutMs = 60_000 } = {}) {
+  let plan = { command: file, args, verbatim: false }
+  if (process.platform === 'win32') {
+    plan = windowsSpawnPlan(file, args, { env: { ...process.env, ...env } })
+    if (!plan) {
+      return Promise.reject(Object.assign(new Error(`spawn ${file} ENOENT`), { code: 'ENOENT' }))
+    }
+  }
   return new Promise((resolve, reject) => {
     execFile(
-      file,
-      args,
-      { cwd, env: env ? { ...process.env, ...env } : undefined, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' },
+      plan.command,
+      plan.args,
+      { cwd, env: env ? { ...process.env, ...env } : undefined, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8', windowsVerbatimArguments: plan.verbatim, windowsHide: true },
       (error, stdout, stderr) => {
         if (error && error.code === 'ENOENT') {
           reject(error)

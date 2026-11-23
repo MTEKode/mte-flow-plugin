@@ -23,6 +23,8 @@ import {
   searchGoal,
   startRun,
   statusText,
+  windowsSpawnPlan,
+  winQuote,
   TRUNCATION_MARKER
 } from '../worker/lib.mjs'
 
@@ -66,6 +68,20 @@ function stubs({ settings = {}, exec, ws = WS, home = '/home/me', gitPaths, clai
   }
   return { deps, calls }
 }
+
+test('windows: npm .cmd shims run through a quoted cmd.exe line, .exe files directly, and a missing command is null', () => {
+  const env = { Path: 'C:\\Program Files\\nodejs;C:\\Users\\me\\AppData\\Roaming\\npm', PATHEXT: '.com;.exe;.bat;.cmd', ComSpec: 'C:\\Windows\\system32\\cmd.exe' }
+  const files = ['C:\\Program Files\\nodejs\\node.exe', 'C:\\Program Files\\nodejs\\npm.cmd', 'C:\\Users\\me\\AppData\\Roaming\\npm\\mte.cmd', 'C:\\Users\\me\\AppData\\Roaming\\npm\\mte']
+  const plan = (file, args) => windowsSpawnPlan(file, args, { env, exists: (p) => files.includes(p) })
+  assert.deepEqual(plan('node', ['--version']), { command: 'C:\\Program Files\\nodejs\\node.exe', args: ['--version'], verbatim: false })
+  // the extensionless `mte` next to mte.cmd is a shell script for Git Bash: never picked
+  assert.deepEqual(plan('mte', ['--version']), { command: 'C:\\Windows\\system32\\cmd.exe', args: ['/d', '/s', '/c', '"C:\\Users\\me\\AppData\\Roaming\\npm\\mte.cmd ^^^"--version^^^""'], verbatim: true })
+  assert.match(plan('npm', ['i', '-g', 'https://x/y.tgz']).args[3], /^"C:\\Program\^ Files\\nodejs\\npm\.cmd /)
+  assert.equal(plan('opencode', ['models']), null)
+  // user text can never break out of its argument
+  assert.equal(winQuote('a"b & calc.exe'), '^^^"a\\^^^"b^^^ ^^^&^^^ calc.exe^^^"')
+  assert.equal(winQuote('ends with \\'), '^^^"ends^^^ with^^^ \\\\^^^"')
+})
 
 test('bootstrap prompt is `/mte-flow <goal>` for short goals', () => {
   assert.equal(buildBootstrapPrompt('ship it'), '/mte-flow ship it')
@@ -522,7 +538,7 @@ test('manifest defaults: claude planner, claude worker, sonnet model, no effort;
   const defaults = Object.fromEntries(manifest.contributes.settings.map((s) => [s.key, s.default]))
   assert.deepEqual([defaults.plannerAgent, defaults.workerAgent, defaults.workerModel, defaults.workerEffort], ['claude', 'claude', 'sonnet', ''])
   assert.ok(manifest.capabilities.some((c) => c.kind === 'storage:own'))
-  assert.equal(manifest.version, '0.6.0')
+  assert.equal(manifest.version, '0.6.1')
   assert.equal(manifest.contributes.panels[0].ui, 'html')
   assert.equal(defaults.plannerSurface, 'chat')
 })
