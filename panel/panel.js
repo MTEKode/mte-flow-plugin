@@ -20,7 +20,7 @@ function picker(btn, { withSurface, get, set }) {
   const label = () => {
     const c = get()
     const h = st.harnesses.find((x) => x.id === c?.agent)
-    btn.firstElementChild.textContent = c ? optionLabel({ name: h?.name ?? c.agent, surface: withSurface ? c.surface : undefined, model: c.model, effort: c.effort }) : 'Loading…'
+    btn.firstElementChild.textContent = c ? optionLabel({ agent: c.agent, name: h?.name ?? c.agent, surface: withSurface ? c.surface : undefined, model: c.model, effort: c.effort }) : 'Loading…'
   }
   const close = () => { pop?.remove(); pop = null; btn.focus() }
   const draw = (list, q) => {

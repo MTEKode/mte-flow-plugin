@@ -11,6 +11,7 @@ import {
   tarballUrl,
   installInWorkspace,
   launchArgs,
+  pinArgs,
   listHarnesses,
   listModels,
   listOrchestration,
@@ -445,7 +446,7 @@ test('manifest defaults: claude planner, claude worker, sonnet model, no effort;
   const defaults = Object.fromEntries(manifest.contributes.settings.map((s) => [s.key, s.default]))
   assert.deepEqual([defaults.plannerAgent, defaults.workerAgent, defaults.workerModel, defaults.workerEffort], ['claude', 'claude', 'sonnet', ''])
   assert.ok(manifest.capabilities.some((c) => c.kind === 'storage:own'))
-  assert.equal(manifest.version, '0.4.0')
+  assert.equal(manifest.version, '0.4.1')
   assert.equal(manifest.contributes.panels[0].ui, 'html')
   assert.equal(defaults.plannerSurface, 'chat')
 })
@@ -487,6 +488,28 @@ test('AC2: a chat handle (orca_session_id) is returned as-is with no fallback', 
   })
   const res = await startRun(deps, { goal: 'x' })
   assert.deepEqual([res.terminalId, res.surface, res.fallback], ['orca_session_id:abc', 'chat', false])
+})
+
+// real Orca 2 shape (T22 L3): chat sessions report kind 'structured' with a structured-agent-session handle
+const STRUCTURED = { outcome: { kind: 'structured', handle: 'structured-agent-session-0d6c1f2e-1111-4222-8333-444455556666' } }
+
+test('AC1: real structured outcome is the chat surface with no fallback; a terminal outcome for a chat request falls back', async () => {
+  const run = (result) => stubs({ exec: async (file, args) => (file === ORCA ? orcaOut(result) : { code: 0, stdout: args[0] === 'planner' ? '{"claimed":false}' : '', stderr: '' }) })
+  const chat = await startRun(run(STRUCTURED).deps, { goal: 'x', plannerSurface: 'chat' })
+  assert.deepEqual([chat.surface, chat.fallback, chat.terminalId], ['chat', false, STRUCTURED.outcome.handle])
+  const fb = await startRun(run({ outcome: { kind: 'terminal', handle: 'term-1' } }).deps, { goal: 'x', plannerSurface: 'chat' })
+  assert.deepEqual([fb.surface, fb.fallback], ['terminal', true])
+})
+
+test('AC2: opencode2/droid refuse --model: no --model/--effort in launch argv or pin; claude/opencode unchanged', () => {
+  const ws = { path: '/w' }
+  for (const plannerAgent of ['opencode2', 'droid']) {
+    const a = launchArgs(ws, { plannerAgent, plannerSurface: 'chat', plannerModel: 'x/y', plannerEffort: 'high' }, 'P')
+    assert.ok(!a.includes('--model') && !a.includes('--effort'))
+    assert.equal(pinArgs({ workerAgent: plannerAgent, workerModel: 'x/y', workerEffort: 'high' }), null)
+  }
+  assert.ok(launchArgs(ws, { plannerAgent: 'opencode', plannerSurface: 'chat', plannerModel: 'p/m', plannerEffort: '' }, 'P').includes('--model'))
+  assert.ok(pinArgs({ workerAgent: 'claude', workerModel: 'sonnet', workerEffort: 'low' }).includes('--effort'))
 })
 
 test('AC1: harness.list and models.list parse the real output shapes; effort hidden for opencode', async () => {

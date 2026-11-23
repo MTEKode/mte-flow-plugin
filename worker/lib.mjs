@@ -107,6 +107,9 @@ export const EFFORTS = {
   pi: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 }
 export const effortsFor = (agent) => EFFORTS[agent] ?? []
+/** Harnesses that refuse launch-time `--model`/`--effort` (they run the model from their own config). */
+export const NO_MODEL_AGENTS = ['opencode2', 'droid']
+export const takesModel = (agent) => !NO_MODEL_AGENTS.includes(agent)
 export const SURFACES = ['chat', 'terminal']
 
 /** Reads the plugin settings, with their defaults. */
@@ -177,7 +180,7 @@ export function installArgs() {
 }
 
 export function pinArgs(settings) {
-  if (!settings.workerModel) {
+  if (!settings.workerModel || !takesModel(settings.workerAgent)) {
     return null
   }
   const args = ['pin', 'set', '--agent', settings.workerAgent, '--model', settings.workerModel]
@@ -307,7 +310,7 @@ export async function startRun(deps, input = {}) {
 /** argv of `orca agent launch` for the planner (without `--json`, which orcaJson appends). `--effort` needs `--model` and an agent that takes one. */
 export function launchArgs(ws, settings, prompt) {
   const args = ['agent', 'launch', '--agent', settings.plannerAgent, '--worktree', `path:${ws.path}`, '--surface', settings.plannerSurface]
-  if (settings.plannerModel) {
+  if (settings.plannerModel && takesModel(settings.plannerAgent)) {
     args.push('--model', settings.plannerModel)
     if (settings.plannerEffort && effortsFor(settings.plannerAgent).length) {
       args.push('--effort', settings.plannerEffort)
@@ -330,7 +333,9 @@ async function launchPlanner(deps, ws, settings, prompt) {
     if (!handle) {
       throw new MteError('orca_failed', 'The orca CLI did not report the launched session.')
     }
-    const surface = result.outcome.kind === 'chat' || result.outcome.kind === 'terminal' ? result.outcome.kind : settings.plannerSurface
+    // real Orca reports a chat session as kind 'structured' (handle `structured-agent-session-<uuid>`)
+    const kind = result.outcome.kind
+    const surface = kind === 'structured' || kind === 'chat' ? 'chat' : kind === 'terminal' ? 'terminal' : settings.plannerSurface
     return { terminalId: handle, surface, fallback: surface !== settings.plannerSurface }
   } catch (error) {
     if (error?.code !== 'orca_missing') {

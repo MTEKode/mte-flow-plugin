@@ -69,3 +69,9 @@ test('AC3: the panel only uses --orca-* colors (no hard-coded hex)', async () =>
     assert.ok(!/\b(?:rgba?|hsla?)\(/i.test(bare), `${f} has a color function literal`)
   }
 })
+
+test('AC2: opencode2 gets only the agent-default option; no custom model row', () => {
+  const opts = buildOptions({ harnesses: [{ id: 'opencode2', name: 'OpenCode 2' }], models: { opencode2: { models: [{ id: 'p/m' }], efforts: [] } }, withSurface: false })
+  assert.deepEqual(opts.map((o) => o.label), ['OpenCode 2 · agent default'])
+  assert.equal(customOption({ agent: 'opencode2' }, 'p/x', 'OpenCode 2'), null)
+})

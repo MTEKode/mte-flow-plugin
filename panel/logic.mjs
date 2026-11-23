@@ -5,13 +5,19 @@ export const EFFORTS = {
   pi: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 }
 export const effortsFor = (agent) => EFFORTS[agent] ?? []
+// keep in sync with worker/lib.mjs NO_MODEL_AGENTS
+export const NO_MODEL_AGENTS = ['opencode2', 'droid']
+export const takesModel = (agent) => !NO_MODEL_AGENTS.includes(agent)
 
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s)
 export const KIND_LABEL = { linear: 'Linear', pr: 'PR', issue: 'Issue' }
 
 /** "Claude (Chat) · sonnet · high"; `surface` is omitted for the worker selector. */
-export function optionLabel({ name, surface, model, effort }) {
+export function optionLabel({ agent, name, surface, model, effort }) {
   const head = surface ? `${name} (${cap(surface)})` : name
+  if (agent && !takesModel(agent)) {
+    return `${head} · agent default`
+  }
   return [head, model || 'default model', effort].filter(Boolean).join(' · ')
 }
 
@@ -26,9 +32,9 @@ export function buildOptions({ harnesses, models, withSurface }) {
     const efforts = m.efforts ?? []
     for (const surface of withSurface ? ['chat', 'terminal'] : [undefined]) {
       const add = (model, effort) =>
-        out.push({ agent: h.id, name: h.name, surface, model, effort, label: optionLabel({ name: h.name, surface, model, effort }) })
+        out.push({ agent: h.id, name: h.name, surface, model, effort, label: optionLabel({ agent: h.id, name: h.name, surface, model, effort }) })
       add('', '')
-      for (const { id } of m.models) {
+      for (const { id } of takesModel(h.id) ? m.models : []) {
         add(id, '')
         for (const effort of efforts) {
           add(id, effort)
@@ -49,11 +55,11 @@ export function filterOptions(options, q, limit = 150) {
 /** The "type any model id" row for the harness/surface/effort currently selected. */
 export function customOption(base, q, name) {
   const model = String(q ?? '').trim()
-  if (!model || /\s/.test(model)) {
+  if (!model || /\s/.test(model) || !takesModel(base.agent)) {
     return null
   }
   const effort = effortsFor(base.agent).includes(base.effort) ? base.effort : ''
-  return { ...base, name, model, effort, custom: true, label: optionLabel({ name, surface: base.surface, model, effort }) }
+  return { ...base, name, model, effort, custom: true, label: optionLabel({ agent: base.agent, name, surface: base.surface, model, effort }) }
 }
 
 export const sameOption = (a, b) => a.agent === b.agent && a.surface === b.surface && (a.model || '') === (b.model || '') && (a.effort || '') === (b.effort || '')
