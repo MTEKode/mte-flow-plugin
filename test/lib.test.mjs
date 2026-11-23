@@ -106,7 +106,7 @@ test('start run: planner show, install, pin set, then the orca CLI launch with /
   assert.deepEqual(seq[2].args, ['pin', 'set', '--agent', 'claude', '--model', 'claude-sonnet-5-5', '--effort', 'high'])
   assert.equal(seq[2].cwd, '/repo/feat')
   assert.deepEqual(seq[3].args, [
-    'agent', 'launch', '--agent', 'claude', '--worktree', 'path:/repo/feat', '--surface', 'chat',
+    'agent', 'launch', '--agent', 'claude', '--worktree', 'path:/repo/feat', '--surface', 'chat', '--focus',
     '--prompt', '/mte-flow build the thing', '--json'
   ])
   assert.deepEqual(seq[3].env, { ORCA_USER_DATA_PATH: '/ud' })
@@ -306,6 +306,29 @@ test('start run with a live planner claim does not release it: it reports the ho
   assert.deepEqual(execs.map((c) => c.args.slice(0, 2).join(' ')), ['planner show'])
 })
 
+test('a claim whose session Orca reports closed is released without asking; an open one still blocks', async () => {
+  const run = async (places) => {
+    const calls = []
+    const { deps } = stubs({
+      exec: async (file, args) => {
+        calls.push(args.slice(0, 2).join(' '))
+        if (args[0] === 'planner' && args[1] === 'show') return { code: 0, stdout: JSON.stringify({ claimed: true, sessionId: 's1' }), stderr: '' }
+        if (args[0] === 'agent' && args[1] === 'show') return { code: 0, stdout: JSON.stringify({ ok: true, result: { orcaSessionId: args[2], places } }), stderr: '' }
+        if (args[0] === 'agent') return { code: 0, stdout: JSON.stringify({ ok: true, result: { outcome: { kind: 'structured', handle: 'h' } } }), stderr: '' }
+        return { code: 0, stdout: '', stderr: '' }
+      }
+    })
+    return { result: await startRun(deps, { goal: 'x' }), calls }
+  }
+  const closed = await run([])
+  assert.equal(closed.result.ok, true)
+  assert.equal(closed.result.replacedStale, true)
+  assert.deepEqual(closed.calls, ['planner show', 'agent show', 'install --agents', 'planner release', 'agent launch'])
+  const open = await run([{ kind: 'chat' }])
+  assert.equal(open.result.error.code, 'planner_claimed')
+  assert.deepEqual(open.calls, ['planner show', 'agent show'])
+})
+
 test('Replace path releases the claim, then launches, in order', async () => {
   const { deps, calls } = stubs({ claim: { claimed: true, sessionId: 's1' }, settings: { workerModel: 'm' } })
   const result = await startRun(deps, { goal: 'x', replace: true })
@@ -446,7 +469,7 @@ test('manifest defaults: claude planner, claude worker, sonnet model, no effort;
   const defaults = Object.fromEntries(manifest.contributes.settings.map((s) => [s.key, s.default]))
   assert.deepEqual([defaults.plannerAgent, defaults.workerAgent, defaults.workerModel, defaults.workerEffort], ['claude', 'claude', 'sonnet', ''])
   assert.ok(manifest.capabilities.some((c) => c.kind === 'storage:own'))
-  assert.equal(manifest.version, '0.4.1')
+  assert.equal(manifest.version, '0.5.0')
   assert.equal(manifest.contributes.panels[0].ui, 'html')
   assert.equal(defaults.plannerSurface, 'chat')
 })
@@ -459,8 +482,8 @@ const ORCA = '/App/Resources/bin/orca'
 test('AC2: launch argv for chat/terminal, with and without model/effort; effort needs model and a supporting agent', () => {
   const ws = { path: '/w' }
   const base = { plannerAgent: 'claude', plannerSurface: 'chat', plannerModel: '', plannerEffort: 'high' }
-  assert.deepEqual(launchArgs(ws, base, 'P'), ['agent', 'launch', '--agent', 'claude', '--worktree', 'path:/w', '--surface', 'chat', '--prompt', 'P'])
-  assert.deepEqual(launchArgs(ws, { ...base, plannerSurface: 'terminal', plannerModel: 'opus' }, 'P'), ['agent', 'launch', '--agent', 'claude', '--worktree', 'path:/w', '--surface', 'terminal', '--model', 'opus', '--effort', 'high', '--prompt', 'P'])
+  assert.deepEqual(launchArgs(ws, base, 'P'), ['agent', 'launch', '--agent', 'claude', '--worktree', 'path:/w', '--surface', 'chat', '--focus', '--prompt', 'P'])
+  assert.deepEqual(launchArgs(ws, { ...base, plannerSurface: 'terminal', plannerModel: 'opus' }, 'P'), ['agent', 'launch', '--agent', 'claude', '--worktree', 'path:/w', '--surface', 'terminal', '--focus', '--model', 'opus', '--effort', 'high', '--prompt', 'P'])
   assert.ok(!launchArgs(ws, { ...base, plannerAgent: 'opencode', plannerModel: 'p/m' }, 'P').includes('--effort'))
 })
 
@@ -526,6 +549,26 @@ test('AC1: harness.list and models.list parse the real output shapes; effort hid
   assert.deepEqual(cl.models.map((m) => m.id), ['fable', 'opus', 'sonnet', 'haiku'])
   assert.ok(cl.efforts.includes('max'))
   assert.deepEqual(parseModelLines('a/b\n\n  c/d  \n'), ['a/b', 'c/d'])
+})
+
+test('antigravity and pi models come from their own CLIs; antigravity takes an effort', async () => {
+  const out = { agy: 'Fetching available models...\ngemini-4-neon-high\tGemini 4 Neon (High)\nclaude-opus-5-5-low\tClaude Opus 5.5 (Low)\n', pi: 'provider        model        context\nnvidia          meta/llama   128K\nalibaba-coding  glm-5        128K\n' }
+  const { deps } = stubs({ exec: async (file) => ({ code: 0, stdout: out[file] ?? '', stderr: '' }) })
+  const agy = await listModels(deps, { agent: 'antigravity' })
+  assert.deepEqual(agy.models, [{ id: 'gemini-4-neon-high', label: 'Gemini 4 Neon (High)' }, { id: 'claude-opus-5-5-low', label: 'Claude Opus 5.5 (Low)' }])
+  assert.deepEqual(agy.efforts, ['low', 'medium', 'high'])
+  assert.deepEqual((await listModels(deps, { agent: 'pi' })).models, [{ id: 'nvidia/meta/llama' }, { id: 'alibaba-coding/glm-5' }])
+  assert.equal((await listModels(deps, { agent: 'opencode2' })).takesModel, false)
+  assert.ok(launchArgs({ path: '/w' }, { plannerAgent: 'antigravity', plannerSurface: 'chat', plannerModel: 'gemini-4-neon-high', plannerEffort: 'low' }, 'P').includes('--effort'))
+})
+
+test('~/.mte/models.json adds ids to its harness only, without duplicates; a missing or broken file adds none', async () => {
+  const { deps } = stubs()
+  deps.readFile = (p) => (assert.equal(p, '/home/me/.mte/models.json'), JSON.stringify({ claude: ['coder/qwen3.7-plus', 'sonnet', 'two words', 7], opencode: 'nope' }))
+  assert.deepEqual((await listModels(deps, { agent: 'claude' })).models.map((m) => m.id), ['fable', 'opus', 'sonnet', 'haiku', 'coder/qwen3.7-plus'])
+  assert.equal((await listModels(deps, { agent: 'codex' })).models.length, 5)
+  deps.readFile = () => { throw new Error('ENOENT') }
+  assert.equal((await listModels(deps, { agent: 'claude' })).models.length, 4)
 })
 
 test('AC1: opencode models are cached in storage', async () => {

@@ -1,28 +1,52 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
-import { buildOptions, createSearcher, customOption, filterOptions, goalText, listKey, moveIndex, optionLabel } from '../panel/logic.mjs'
+import { createSearcher, filterRows, fitSelection, goalText, groupRows, iconFor, listKey, modelRows, moveIndex, originIcon } from '../panel/logic.mjs'
 
-const harnesses = [{ id: 'claude', name: 'Claude' }, { id: 'opencode', name: 'OpenCode' }]
-const models = { claude: { models: [{ id: 'sonnet' }], efforts: ['low', 'high'] }, opencode: { models: [{ id: 'p/m' }], efforts: [] } }
-
-test('AC3: options combine harness (surface) model effort; effort only where supported', () => {
-  const labels = buildOptions({ harnesses, models, withSurface: true }).map((o) => o.label)
-  assert.ok(labels.includes('Claude (Chat) · sonnet · high'))
-  assert.ok(labels.includes('OpenCode (Terminal) · p/m'))
-  assert.ok(!labels.some((l) => l.startsWith('OpenCode') && /· (low|high)$/.test(l)))
-  assert.ok(buildOptions({ harnesses, models, withSurface: false }).every((o) => o.surface === undefined && !/\(/.test(o.label)))
-  assert.equal(optionLabel({ name: 'Claude', surface: 'chat', model: '', effort: '' }), 'Claude (Chat) · default model')
+test('model rows: default first, labels when the CLI gives them, an unlisted current model stays', () => {
+  const info = { takesModel: true, models: [{ id: 'gemini-x-high', label: 'Gemini X (High)' }, { id: 'p/m' }] }
+  assert.deepEqual(modelRows(info, ''), [['', 'Default model'], ['gemini-x-high', 'Gemini X (High)'], ['p/m', 'p/m']])
+  assert.deepEqual(modelRows(info, 'typed/id').at(-1), ['typed/id', 'typed/id'])
+  assert.deepEqual(modelRows({ takesModel: false, models: [{ id: 'p/m' }] }, 'p/m'), [['', 'Agent default']])
 })
 
-test('AC3: filtering ANDs the words, case-insensitively; custom model row', () => {
-  const all = buildOptions({ harnesses, models, withSurface: true })
-  assert.ok(filterOptions(all, 'CLAUDE term high').every((o) => o.label === 'Claude (Terminal) · sonnet · high'))
-  assert.equal(filterOptions(all, 'zzz').length, 0)
-  const c = customOption({ agent: 'claude', surface: 'chat', effort: 'high' }, 'my-model', 'Claude')
-  assert.deepEqual([c.model, c.effort, c.custom], ['my-model', 'high', true])
-  assert.equal(customOption({ agent: 'opencode', surface: 'chat', effort: 'high' }, 'p/x', 'OpenCode').effort, '')
-  assert.equal(customOption({ agent: 'claude' }, 'two words', 'Claude'), null)
+test('model rows are grouped by origin (the provider prefix); unprefixed rows stay on top, ungrouped', () => {
+  const rows = [['', 'Default model'], ['zai-coding-plan/glm-5.3', 'zai-coding-plan/glm-5.3'], ['alibaba-coder-plan/kimi-k2.5', 'alibaba-coder-plan/kimi-k2.5'], ['zai-coding-plan/glm-5.4', 'zai-coding-plan/glm-5.4'], ['nvidia/meta/llama', 'nvidia/meta/llama']]
+  assert.deepEqual(groupRows(rows), [
+    { origin: null, rows: [['', 'Default model']] },
+    { origin: 'zai-coding-plan', rows: [['zai-coding-plan/glm-5.3', 'zai-coding-plan/glm-5.3'], ['zai-coding-plan/glm-5.4', 'zai-coding-plan/glm-5.4']] },
+    { origin: 'alibaba-coder-plan', rows: [['alibaba-coder-plan/kimi-k2.5', 'alibaba-coder-plan/kimi-k2.5']] },
+    { origin: 'nvidia', rows: [['nvidia/meta/llama', 'nvidia/meta/llama']] }
+  ])
+  assert.deepEqual(groupRows([['', 'Default model'], ['sonnet', 'sonnet']]), [{ origin: null, rows: [['', 'Default model'], ['sonnet', 'sonnet']] }])
+})
+
+test('model search ANDs the words over id and label; origins map to a shipped icon or none', async () => {
+  const rows = [['', 'Default model'], ['zai-coding-plan/glm-5.3', 'zai-coding-plan/glm-5.3'], ['gemini-4-neon-high', 'Gemini 4 Neon (High)'], ['alibaba-coder-plan/glm-5', 'alibaba-coder-plan/glm-5']]
+  assert.deepEqual(filterRows(rows, 'GLM zai').map((r) => r[0]), ['zai-coding-plan/glm-5.3'])
+  assert.deepEqual(filterRows(rows, 'neon (high)').map((r) => r[0]), ['gemini-4-neon-high'])
+  assert.equal(filterRows(rows, '  ').length, 4)
+  for (const origin of ['alibaba-coder-plan', 'bailian-token-plan-personal', 'zai-coding-plan', 'claude-code', 'opencode', 'nvidia']) {
+    assert.ok((await readFile(new URL(`../panel/${originIcon(origin)}`, import.meta.url))).length > 0, origin)
+  }
+  assert.equal(originIcon('bailian-token-plan-personal'), 'icons/alibaba.png')
+  assert.equal(originIcon('swiftlm'), null)
+})
+
+test('selection is fitted to the harness: no model where it runs its own, effort only with a model it supports', () => {
+  const claude = { takesModel: true, efforts: ['low', 'high'] }
+  assert.deepEqual(fitSelection({ agent: 'claude', model: 'sonnet', effort: 'high' }, claude), { agent: 'claude', model: 'sonnet', effort: 'high' })
+  assert.equal(fitSelection({ model: '', effort: 'high' }, claude).effort, '')
+  assert.equal(fitSelection({ model: 'sonnet', effort: 'max' }, claude).effort, '')
+  assert.deepEqual(fitSelection({ model: 'p/m', effort: 'high' }, { takesModel: false, efforts: [] }), { model: '', effort: '' })
+})
+
+test('every harness icon the panel names ships in panel/icons; opencode2 reuses opencode; unknown gets none', async () => {
+  for (const id of ['claude', 'opencode', 'opencode2', 'codex', 'antigravity', 'pi', 'droid', 'gemini']) {
+    assert.ok((await readFile(new URL(`../panel/${iconFor(id)}`, import.meta.url))).length > 0, id)
+  }
+  assert.equal(iconFor('opencode2'), 'icons/opencode.png')
+  assert.equal(iconFor('someday'), null)
 })
 
 test('AC3: keyboard navigation wraps and Enter/Esc map to select/close', () => {
@@ -68,10 +92,4 @@ test('AC3: the panel only uses --orca-* colors (no hard-coded hex)', async () =>
     const bare = text.replace(/var\([^()]*(?:\([^()]*\)[^()]*)*\)/g, '')
     assert.ok(!/\b(?:rgba?|hsla?)\(/i.test(bare), `${f} has a color function literal`)
   }
-})
-
-test('AC2: opencode2 gets only the agent-default option; no custom model row', () => {
-  const opts = buildOptions({ harnesses: [{ id: 'opencode2', name: 'OpenCode 2' }], models: { opencode2: { models: [{ id: 'p/m' }], efforts: [] } }, withSurface: false })
-  assert.deepEqual(opts.map((o) => o.label), ['OpenCode 2 · agent default'])
-  assert.equal(customOption({ agent: 'opencode2' }, 'p/x', 'OpenCode 2'), null)
 })

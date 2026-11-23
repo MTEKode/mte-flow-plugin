@@ -11,18 +11,36 @@
   .row { display: flex; align-items: center; gap: 8px; }
   .between { justify-content: space-between; }
   .stack { display: flex; flex-direction: column; gap: 14px; }
-  #f-worker { margin-top: -6px; }
   .actions { margin-top: 4px; flex-wrap: wrap; }
   .actions button { white-space: nowrap; flex: 1 1 auto; }
   .section { margin-top: 10px; }
   .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; position: relative; }
   label, .label { font-size: 12px; font-weight: 500; color: var(--orca-muted-foreground); }
   .muted { color: var(--orca-muted-foreground); font-size: 12px; }
-  input, textarea, .picker { width: 100%; border: 1px solid var(--orca-input); background: transparent; color: inherit; border-radius: 6px; padding: 0 10px; font: inherit; height: 34px; outline: none; }
+  input, textarea, select, .picker { width: 100%; border: 1px solid var(--orca-input); background: transparent; color: inherit; border-radius: 6px; padding: 0 10px; font: inherit; height: 34px; outline: none; }
   textarea { height: 84px; padding: 8px 10px; resize: vertical; }
-  input:focus-visible, textarea:focus-visible, .picker:focus-visible, button:focus-visible { border-color: var(--orca-ring); box-shadow: 0 0 0 2px var(--orca-ring); }
-  .picker { display: flex; align-items: center; justify-content: space-between; gap: 8px; text-align: left; cursor: pointer; }
-  .picker span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible { border-color: var(--orca-ring); box-shadow: 0 0 0 2px var(--orca-ring); }
+  select, ::picker(select) { appearance: base-select; }
+  select { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 0; cursor: pointer; }
+  select.fit { flex: 0 0 auto; width: auto; }
+  select:disabled { opacity: .5; cursor: default; }
+  select::picker-icon { color: var(--orca-muted-foreground); }
+  select > button { all: unset; flex: 1; min-width: 0; }
+  selectedcontent, option { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; }
+  selectedcontent { overflow: hidden; }
+  ::picker(select) { background: var(--orca-popover); color: var(--orca-popover-foreground); border: 1px solid var(--orca-border); border-radius: 6px; padding: 4px; margin-top: 4px; max-height: 280px; box-shadow: 0 4px 16px color-mix(in srgb, var(--orca-foreground) 20%, transparent); }
+  option { padding: 5px 8px; border-radius: 4px; cursor: pointer; }
+  option:hover, option:focus-visible { background: var(--orca-accent); color: var(--orca-accent-foreground); outline: none; }
+  option::checkmark { order: 1; margin-left: auto; }
+  select img, .picker img, .group img, .letter { width: 16px; height: 16px; border-radius: 3px; flex: none; }
+  .picker { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 0; text-align: left; }
+  .picker:hover:not(:disabled) { background: transparent; color: inherit; }
+  .picker .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .picker .caret { color: var(--orca-muted-foreground); }
+  .pop input { position: sticky; top: 0; background: var(--orca-popover); }
+  .group { display: flex; align-items: center; gap: 8px; padding: 8px 10px 4px; font-size: 11px; font-weight: 600; color: var(--orca-muted-foreground); }
+  .letter { display: inline-grid; place-items: center; font-size: 10px; font-weight: 600; border: 1px solid var(--orca-border); }
+  .field > .row > input { flex: 1 1 0; min-width: 0; }
   button { font: inherit; border-radius: 6px; border: 1px solid var(--orca-border); background: transparent; color: inherit; height: 30px; padding: 0 12px; cursor: pointer; }
   button:hover:not(:disabled) { background: var(--orca-accent); color: var(--orca-accent-foreground); }
   button.primary { background: var(--orca-primary); color: var(--orca-primary-foreground); border-color: var(--orca-primary); }
@@ -59,12 +77,10 @@
   </div>
 
   <div class="field" id="f-planner">
-    <label>Orchestrator</label>
-    <button type="button" class="picker" id="planner-btn" aria-haspopup="listbox"><span></span><span aria-hidden="true">▾</span></button>
+    <span class="label">Orchestrator</span>
   </div>
   <div class="field" id="f-worker">
-    <label>Workers <span class="muted">(always terminal)</span></label>
-    <button type="button" class="picker" id="worker-btn" aria-haspopup="listbox"><span></span><span aria-hidden="true">▾</span></button>
+    <span class="label">Workers <span class="muted">(always terminal)</span></span>
   </div>
 
   <div class="row actions">

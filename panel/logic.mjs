@@ -1,68 +1,63 @@
-// DOM-free helpers of the MTE Flow panel: option building/filtering, keyboard navigation, goal text, debounced search.
-export const EFFORTS = {
-  claude: ['low', 'medium', 'high', 'xhigh', 'max'],
-  codex: ['low', 'medium', 'high', 'xhigh'],
-  pi: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
-}
-export const effortsFor = (agent) => EFFORTS[agent] ?? []
-// keep in sync with worker/lib.mjs NO_MODEL_AGENTS
-export const NO_MODEL_AGENTS = ['opencode2', 'droid']
-export const takesModel = (agent) => !NO_MODEL_AGENTS.includes(agent)
-
-const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s)
+// DOM-free helpers of the MTE Flow panel: selector rows, keyboard navigation, goal text, debounced search.
 export const KIND_LABEL = { linear: 'Linear', pr: 'PR', issue: 'Issue' }
 
-/** "Claude (Chat) · sonnet · high"; `surface` is omitted for the worker selector. */
-export function optionLabel({ agent, name, surface, model, effort }) {
-  const head = surface ? `${name} (${cap(surface)})` : name
-  if (agent && !takesModel(agent)) {
-    return `${head} · agent default`
+// icons shipped in panel/icons (the frame cannot load remote images); other harnesses get a letter badge
+const HARNESS_ICONS = ['claude', 'opencode', 'codex', 'antigravity', 'pi', 'droid', 'gemini']
+export function iconFor(agent) {
+  const id = agent === 'opencode2' ? 'opencode' : agent
+  return HARNESS_ICONS.includes(id) ? `icons/${id}.png` : null
+}
+
+/** `[value, label]` rows of the model selector; a current model the harness did not list stays selectable. */
+export function modelRows(info, current) {
+  if (!info.takesModel) {
+    return [['', 'Agent default']]
   }
-  return [head, model || 'default model', effort].filter(Boolean).join(' · ')
+  const rows = [['', 'Default model'], ...info.models.map((m) => [m.id, m.label ?? m.id])]
+  if (current && !info.models.some((m) => m.id === current)) {
+    rows.push([current, current])
+  }
+  return rows
+}
+
+// which shipped icon stands for an origin (a provider id such as `zai-coding-plan`); first match wins
+const ORIGIN_ICONS = [[/alibaba|bailian|dashscope|qwen/, 'alibaba'], [/zai|z-ai|zhipu|glm/, 'zai'], [/claude|anthropic/, 'claude'], [/opencode/, 'opencode'], [/nvidia/, 'nvidia'], [/openai|codex/, 'codex'], [/google|gemini/, 'gemini']]
+export function originIcon(origin) {
+  const hit = ORIGIN_ICONS.find(([re]) => re.test(String(origin).toLowerCase()))
+  return hit ? `icons/${hit[1]}.png` : null
+}
+
+/** The origin of a model id: its `provider/` prefix, or null. */
+export const originOf = (id) => (String(id).indexOf('/') > 0 ? String(id).slice(0, String(id).indexOf('/')) : null)
+
+/** Case-insensitive AND over the words of `q`, matched against a row's id and label. */
+export function filterRows(rows, q) {
+  const words = String(q ?? '').toLowerCase().split(/\s+/).filter(Boolean)
+  return words.length ? rows.filter(([value, label]) => words.every((w) => `${value} ${label}`.toLowerCase().includes(w))) : rows
 }
 
 /**
- * Every selectable combination: harness x [surface] x model x [effort]. Effort is only offered for harnesses that
- * take one (and never without a model). `withSurface` is true for the orchestrator, false for workers.
+ * Groups model rows by origin: the `provider/` prefix of a model id (opencode, pi) is the plan or account it bills.
+ * Rows without a prefix come first, ungrouped. Labels keep the full id so the closed selector still names the origin.
  */
-export function buildOptions({ harnesses, models, withSurface }) {
-  const out = []
-  for (const h of harnesses) {
-    const m = models[h.id] ?? { models: [], efforts: effortsFor(h.id) }
-    const efforts = m.efforts ?? []
-    for (const surface of withSurface ? ['chat', 'terminal'] : [undefined]) {
-      const add = (model, effort) =>
-        out.push({ agent: h.id, name: h.name, surface, model, effort, label: optionLabel({ agent: h.id, name: h.name, surface, model, effort }) })
-      add('', '')
-      for (const { id } of takesModel(h.id) ? m.models : []) {
-        add(id, '')
-        for (const effort of efforts) {
-          add(id, effort)
-        }
-      }
+export function groupRows(rows) {
+  const groups = [{ origin: null, rows: [] }]
+  for (const [value, label] of rows) {
+    const origin = originOf(value)
+    let group = groups.find((g) => g.origin === origin)
+    if (!group) {
+      groups.push((group = { origin, rows: [] }))
     }
+    group.rows.push([value, label])
   }
-  return out
+  return groups
 }
 
-/** Case-insensitive AND over the words of `q`, capped so a huge opencode list stays snappy. */
-export function filterOptions(options, q, limit = 150) {
-  const words = String(q ?? '').toLowerCase().split(/\s+/).filter(Boolean)
-  const hits = words.length ? options.filter((o) => words.every((w) => o.label.toLowerCase().includes(w))) : options
-  return hits.slice(0, limit)
+/** Drops what the harness cannot take: a model where it runs its own, an effort it lacks or one without a model. */
+export function fitSelection(sel, info) {
+  const model = info.takesModel ? sel.model || '' : ''
+  return { ...sel, model, effort: model && info.efforts.includes(sel.effort) ? sel.effort : '' }
 }
-
-/** The "type any model id" row for the harness/surface/effort currently selected. */
-export function customOption(base, q, name) {
-  const model = String(q ?? '').trim()
-  if (!model || /\s/.test(model) || !takesModel(base.agent)) {
-    return null
-  }
-  const effort = effortsFor(base.agent).includes(base.effort) ? base.effort : ''
-  return { ...base, name, model, effort, custom: true, label: optionLabel({ agent: base.agent, name, surface: base.surface, model, effort }) }
-}
-
-export const sameOption = (a, b) => a.agent === b.agent && a.surface === b.surface && (a.model || '') === (b.model || '') && (a.effort || '') === (b.effort || '')
 
 /** Next highlighted index for ArrowDown/ArrowUp/Home/End in a list of `n` rows (wraps; -1 when empty). */
 export function moveIndex(index, n, key) {

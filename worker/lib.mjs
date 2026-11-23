@@ -1,7 +1,7 @@
 // Pure logic for the MTE Flow plugin. No Orca imports: every side effect comes in through `deps`
 // ({ exec, host, settings }) so the tests can stub child_process and the host API.
 import { execFile } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -104,7 +104,9 @@ export function resolveOrcaCli({
 export const EFFORTS = {
   claude: ['low', 'medium', 'high', 'xhigh', 'max'],
   codex: ['low', 'medium', 'high', 'xhigh'],
-  pi: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+  pi: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+  // Orca's own antigravity catalog offers these three for `--effort`
+  antigravity: ['low', 'medium', 'high']
 }
 export const effortsFor = (agent) => EFFORTS[agent] ?? []
 /** Harnesses that refuse launch-time `--model`/`--effort` (they run the model from their own config). */
@@ -184,7 +186,7 @@ export function pinArgs(settings) {
     return null
   }
   const args = ['pin', 'set', '--agent', settings.workerAgent, '--model', settings.workerModel]
-  // only claude/codex/pi take an effort: drop it for the rest
+  // only the EFFORTS harnesses take an effort: drop it for the rest
   if (effortsFor(settings.workerAgent).length && settings.workerEffort) {
     args.push('--effort', settings.workerEffort)
   }
@@ -238,6 +240,22 @@ async function readClaim(deps, settings, cwd) {
 }
 
 /**
+ * True only when Orca positively reports the claiming session as closed (`orca agent show` lists no place for it).
+ * ponytail: session-id claims only; a terminal-handle-only claim still asks (add `orca terminal show` if that bites).
+ */
+async function isClaimStale(deps, claim) {
+  if (!claim.sessionId) {
+    return false
+  }
+  try {
+    const shown = await orcaJson(deps, ['agent', 'show', claim.sessionId])
+    return Array.isArray(shown?.places) && shown.places.length === 0
+  } catch {
+    return false
+  }
+}
+
+/**
  * Start a run with a terminal planner: `mte planner show` (a live claim stops the run), `mte install`, `mte pin set`,
  * `mte planner release`, then the planner launch with `/mte-flow <goal>`. With `replace: true` an existing claim is
  * released instead of stopping the run.
@@ -270,7 +288,9 @@ export async function startRun(deps, input = {}) {
   if (!existing.ok) {
     return existing
   }
-  if (existing.claim?.claimed && !replace) {
+  // a claim whose chat/terminal is closed can never dispatch again: drop it without asking
+  const stale = existing.claim?.claimed && !replace && (await isClaimStale(deps, existing.claim))
+  if (existing.claim?.claimed && !replace && !stale) {
     const holder = describeClaim(existing.claim)
     return {
       ...fail(
@@ -301,15 +321,15 @@ export async function startRun(deps, input = {}) {
   const prompt = buildBootstrapPrompt(goal)
   try {
     const launched = await launchPlanner(deps, ws, settings, prompt)
-    return { ok: true, workspace: ws, ...launched, pinned: Boolean(pin), truncated: prompt.endsWith(TRUNCATION_MARKER) }
+    return { ok: true, workspace: ws, ...launched, pinned: Boolean(pin), truncated: prompt.endsWith(TRUNCATION_MARKER), replacedStale: Boolean(stale) }
   } catch (error) {
     return fail('launch', String(error?.code ?? 'action_failed'), String(error?.message ?? error))
   }
 }
 
-/** argv of `orca agent launch` for the planner (without `--json`, which orcaJson appends). `--effort` needs `--model` and an agent that takes one. */
+/** argv of `orca agent launch` for the planner (without `--json`, which orcaJson appends); `--focus` so the person sees it start (or fail). `--effort` needs `--model` and an agent that takes one. */
 export function launchArgs(ws, settings, prompt) {
-  const args = ['agent', 'launch', '--agent', settings.plannerAgent, '--worktree', `path:${ws.path}`, '--surface', settings.plannerSurface]
+  const args = ['agent', 'launch', '--agent', settings.plannerAgent, '--worktree', `path:${ws.path}`, '--surface', settings.plannerSurface, '--focus']
   if (settings.plannerModel && takesModel(settings.plannerAgent)) {
     args.push('--model', settings.plannerModel)
     if (settings.plannerEffort && effortsFor(settings.plannerAgent).length) {
@@ -553,22 +573,54 @@ const MODELS_TTL_MS = 10 * 60_000
 export const parseModelLines = (stdout) =>
   [...new Set(String(stdout ?? '').split('\n').map((l) => l.trim()).filter((l) => /^[\w.-]+\/\S+$/.test(l)))]
 
-/** Models + effort values for one harness; opencode is probed (cached in plugin storage). */
+/** `agy models` prints `<id>\t<label>` per line (after a "Fetching…" line). */
+export const parseAgyModels = (stdout) =>
+  String(stdout ?? '').split('\n').map((l) => l.split('\t')).filter((c) => c.length >= 2 && /^\S+$/.test(c[0])).map(([id, label]) => ({ id, label: label.trim() }))
+
+/** `pi --list-models` prints a `provider  model  …` table under a header row; Orca takes `provider/id`. */
+export const parsePiModels = (stdout) =>
+  String(stdout ?? '').split('\n').map((l) => l.trim().split(/\s+/)).filter((c) => c.length >= 2 && c[0] !== 'provider').map((c) => ({ id: `${c[0]}/${c[1]}` }))
+
+/** Harnesses whose models are account-scoped: ask their own CLI. */
+const MODEL_PROBES = {
+  opencode: { file: 'opencode', args: ['models'], parse: (out) => parseModelLines(out).map((id) => ({ id })) },
+  antigravity: { file: 'agy', args: ['models'], parse: parseAgyModels },
+  pi: { file: 'pi', args: ['--list-models'], parse: parsePiModels }
+}
+
+/**
+ * Extra model ids per harness from the person's own `~/.mte/models.json` (`{ "claude": ["gateway/model", …] }`):
+ * ids no CLI can list, such as models a custom launch command routes to another provider. Missing or invalid: none.
+ */
+export function readExtraModels(deps, agent) {
+  try {
+    const read = deps.readFile ?? ((p) => readFileSync(p, 'utf8'))
+    const ids = JSON.parse(read(join(deps.homedir ?? homedir(), '.mte', 'models.json')))[agent]
+    return Array.isArray(ids) ? ids.filter((id) => typeof id === 'string' && id && !/\s/.test(id)) : []
+  } catch {
+    return []
+  }
+}
+
+/** Models + effort values for one harness; probed lists are cached in plugin storage. */
 export async function listModels(deps, { agent }) {
-  let ids = MODEL_SEEDS[agent] ?? []
-  if (agent === 'opencode') {
-    const cached = await deps.storage?.get('models:opencode')
-    if (cached && Date.now() - cached.at < MODELS_TTL_MS) {
-      ids = cached.ids
+  let models = (MODEL_SEEDS[agent] ?? []).map((id) => ({ id }))
+  const probe = MODEL_PROBES[agent]
+  if (probe) {
+    const key = `models:${agent}`
+    const cached = await deps.storage?.get(key)
+    if (cached?.models && Date.now() - cached.at < MODELS_TTL_MS) {
+      models = cached.models
     } else {
-      const res = await tryExec(deps, 'opencode', ['models'], { timeoutMs: 20_000 })
-      ids = res.code === 0 ? parseModelLines(res.stdout) : []
-      if (ids.length) {
-        await deps.storage?.set('models:opencode', { at: Date.now(), ids })
+      const res = await tryExec(deps, probe.file, probe.args, { timeoutMs: 30_000 })
+      models = res.code === 0 ? probe.parse(res.stdout) : []
+      if (models.length) {
+        await deps.storage?.set(key, { at: Date.now(), models })
       }
     }
   }
-  return { models: ids.map((id) => ({ id })), efforts: effortsFor(agent) }
+  const extra = readExtraModels(deps, agent).filter((id) => !models.some((m) => m.id === id))
+  return { models: [...models, ...extra.map((id) => ({ id }))], efforts: effortsFor(agent), takesModel: takesModel(agent) }
 }
 
 /** `owner/repo` of a GitHub remote url (https or ssh), else null. */
