@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MTE Flow</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 12px; background: var(--orca-background); color: var(--orca-foreground); font: 13px/1.4 system-ui, sans-serif; }
+  h1 { font-size: 14px; font-weight: 600; margin: 0; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .between { justify-content: space-between; }
+  .stack { display: flex; flex-direction: column; gap: 12px; }
+  .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; position: relative; }
+  label, .label { font-size: 12px; font-weight: 500; color: var(--orca-muted-foreground); }
+  .muted { color: var(--orca-muted-foreground); font-size: 12px; }
+  input, textarea, .picker { width: 100%; border: 1px solid var(--orca-input); background: transparent; color: inherit; border-radius: 6px; padding: 0 10px; font: inherit; height: 34px; outline: none; }
+  textarea { height: 84px; padding: 8px 10px; resize: vertical; }
+  input:focus-visible, textarea:focus-visible, .picker:focus-visible, button:focus-visible { border-color: var(--orca-ring); box-shadow: 0 0 0 2px var(--orca-ring); }
+  .picker { display: flex; align-items: center; justify-content: space-between; gap: 8px; text-align: left; cursor: pointer; }
+  .picker span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button { font: inherit; border-radius: 6px; border: 1px solid var(--orca-border); background: transparent; color: inherit; height: 30px; padding: 0 12px; cursor: pointer; }
+  button:hover:not(:disabled) { background: var(--orca-accent); color: var(--orca-accent-foreground); }
+  button.primary { background: var(--orca-primary); color: var(--orca-primary-foreground); border-color: var(--orca-primary); }
+  button.primary:hover:not(:disabled) { background: var(--orca-primary); color: var(--orca-primary-foreground); opacity: .9; }
+  button:disabled { opacity: .5; cursor: default; }
+  .pop { position: absolute; z-index: 10; top: 100%; left: 0; right: 0; margin-top: 4px; background: var(--orca-popover); color: var(--orca-popover-foreground); border: 1px solid var(--orca-border); border-radius: 6px; box-shadow: 0 4px 16px rgb(0 0 0 / .25); max-height: 260px; overflow: auto; }
+  .pop input { border: 0; border-bottom: 1px solid var(--orca-border); border-radius: 6px 6px 0 0; }
+  .opt { padding: 6px 10px; cursor: pointer; display: flex; gap: 8px; align-items: baseline; }
+  .opt.active { background: var(--orca-accent); color: var(--orca-accent-foreground); }
+  .opt .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tag { font-size: 11px; border: 1px solid var(--orca-border); border-radius: 4px; padding: 0 5px; flex: none; color: var(--orca-muted-foreground); }
+  .callout { border: 1px solid var(--orca-border); border-radius: 6px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+  .callout.danger { border-color: var(--orca-destructive); }
+  .callout.danger b { color: var(--orca-destructive); }
+  .callout.ok { background: var(--orca-accent); }
+  .workers { border: 1px solid var(--orca-border); border-radius: 6px; }
+  .worker { padding: 6px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .worker + .worker { border-top: 1px solid var(--orca-border); }
+  .badge { font-size: 11px; border-radius: 999px; background: var(--orca-primary); color: var(--orca-primary-foreground); padding: 1px 8px; }
+  code { font-family: ui-monospace, monospace; font-size: 12px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="stack" id="app">
+  <div class="row between"><h1>MTE Flow</h1><span class="badge" id="active">0 active</span></div>
+  <div id="notices" class="stack" style="gap:8px"></div>
+
+  <div class="field">
+    <label for="goal">Goal</label>
+    <textarea id="goal" placeholder="Describe the goal, or search Linear issues, PRs and issues…" role="combobox" aria-expanded="false" aria-controls="goal-list" aria-autocomplete="list"></textarea>
+    <div class="pop" id="goal-list" role="listbox" hidden></div>
+    <div class="muted" id="goal-hint" hidden></div>
+  </div>
+
+  <div class="field" id="f-planner">
+    <label>Orchestrator</label>
+    <button type="button" class="picker" id="planner-btn" aria-haspopup="listbox"><span></span><span aria-hidden="true">▾</span></button>
+  </div>
+  <div class="field" id="f-worker">
+    <label>Workers <span class="muted">(always terminal)</span></label>
+    <button type="button" class="picker" id="worker-btn" aria-haspopup="listbox"><span></span><span aria-hidden="true">▾</span></button>
+  </div>
+
+  <div class="row">
+    <button type="button" class="primary" id="start">Start run</button>
+    <button type="button" id="install">Install MTE in this workspace</button>
+    <button type="button" id="repair">Repair setup</button>
+  </div>
+  <div class="muted" id="ws"></div>
+
+  <div class="stack" style="gap:6px">
+    <span class="label">Workers</span>
+    <div class="workers" id="workers"></div>
+  </div>
+</div>
+<script type="module" src="panel.js"></script>
+</body>
+</html>

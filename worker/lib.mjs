@@ -100,13 +100,24 @@ export function resolveOrcaCli({
   return { bin: bundled ?? 'orca', env }
 }
 
-/** Reads the six plugin settings, with their defaults. */
+/** Agents whose launch/worker-start accept `--effort`, and the values each takes (panel-v2 feasibility report, section E). */
+export const EFFORTS = {
+  claude: ['low', 'medium', 'high', 'xhigh', 'max'],
+  codex: ['low', 'medium', 'high', 'xhigh'],
+  pi: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+}
+export const effortsFor = (agent) => EFFORTS[agent] ?? []
+export const SURFACES = ['chat', 'terminal']
+
+/** Reads the plugin settings, with their defaults. */
 export async function readSettings(host) {
   const raw = (await host.settings()) ?? {}
   const str = (value, fallback = '') => (typeof value === 'string' && value.trim() ? value.trim() : fallback)
   return {
     plannerAgent: str(raw.plannerAgent, 'claude'),
     plannerModel: str(raw.plannerModel),
+    plannerSurface: SURFACES.includes(raw.plannerSurface) ? raw.plannerSurface : 'chat',
+    plannerEffort: str(raw.plannerEffort),
     workerAgent: str(raw.workerAgent, 'claude'),
     workerModel: str(raw.workerModel),
     workerEffort: str(raw.workerEffort),
@@ -170,8 +181,8 @@ export function pinArgs(settings) {
     return null
   }
   const args = ['pin', 'set', '--agent', settings.workerAgent, '--model', settings.workerModel]
-  // opencode has no reasoning-effort knob: drop it.
-  if (settings.workerAgent !== 'opencode' && settings.workerEffort) {
+  // only claude/codex/pi take an effort: drop it for the rest
+  if (effortsFor(settings.workerAgent).length && settings.workerEffort) {
     args.push('--effort', settings.workerEffort)
   }
   return args
@@ -228,13 +239,17 @@ async function readClaim(deps, settings, cwd) {
  * `mte planner release`, then the planner launch with `/mte-flow <goal>`. With `replace: true` an existing claim is
  * released instead of stopping the run.
  */
-export async function startRun(deps, { goal, plannerAgent, plannerModel, replace = false } = {}) {
+export async function startRun(deps, input = {}) {
+  const { goal, replace = false } = input
   const settings = await readSettings(deps.host)
-  if (plannerAgent) {
-    settings.plannerAgent = plannerAgent
+  // the panel's selection beats the settings (which only seed it)
+  for (const key of ['plannerAgent', 'plannerModel', 'plannerSurface', 'plannerEffort', 'workerAgent', 'workerModel', 'workerEffort']) {
+    if (typeof input[key] === 'string') {
+      settings[key] = input[key].trim()
+    }
   }
-  if (plannerModel !== undefined) {
-    settings.plannerModel = plannerModel
+  if (!SURFACES.includes(settings.plannerSurface)) {
+    settings.plannerSurface = 'chat'
   }
   if (!String(goal ?? '').trim()) {
     return fail('input', 'empty_goal', 'Write a goal first.')
@@ -282,38 +297,48 @@ export async function startRun(deps, { goal, plannerAgent, plannerModel, replace
   }
   const prompt = buildBootstrapPrompt(goal)
   try {
-    const terminalId = await launchPlanner(deps, ws, settings, prompt)
-    return { ok: true, workspace: ws, terminalId, pinned: Boolean(pin), truncated: prompt.endsWith(TRUNCATION_MARKER) }
+    const launched = await launchPlanner(deps, ws, settings, prompt)
+    return { ok: true, workspace: ws, ...launched, pinned: Boolean(pin), truncated: prompt.endsWith(TRUNCATION_MARKER) }
   } catch (error) {
     return fail('launch', String(error?.code ?? 'action_failed'), String(error?.message ?? error))
   }
 }
 
-/**
- * Starts the planner terminal with its prompt. The host's `agent.launch` opens the terminal and then
- * sends the prompt in a second, fire-and-forget call whose failure is only logged (QA: the prompt never
- * arrived), so the orca CLI's single `agent launch --prompt` call is the primary path. The host API is
- * only the fallback when the CLI cannot be found.
- */
-async function launchPlanner(deps, ws, settings, prompt) {
-  const args = ['agent', 'launch', '--agent', settings.plannerAgent, '--worktree', `path:${ws.path}`, '--surface', 'terminal', '--prompt', prompt]
+/** argv of `orca agent launch` for the planner (without `--json`, which orcaJson appends). `--effort` needs `--model` and an agent that takes one. */
+export function launchArgs(ws, settings, prompt) {
+  const args = ['agent', 'launch', '--agent', settings.plannerAgent, '--worktree', `path:${ws.path}`, '--surface', settings.plannerSurface]
   if (settings.plannerModel) {
     args.push('--model', settings.plannerModel)
+    if (settings.plannerEffort && effortsFor(settings.plannerAgent).length) {
+      args.push('--effort', settings.plannerEffort)
+    }
   }
+  args.push('--prompt', prompt)
+  return args
+}
+
+/**
+ * Starts the planner with its prompt through the orca CLI's single `agent launch --prompt` call (the host's
+ * `agent.launch` sends the prompt in a fire-and-forget second call, so it is only the terminal-only fallback when
+ * the CLI cannot be found). Resolves { terminalId: handle, surface: outcome.kind, fallback }: `fallback` is true
+ * when the host opened a different surface than the one asked for (chat -> terminal).
+ */
+async function launchPlanner(deps, ws, settings, prompt) {
   try {
-    const result = await orcaJson(deps, args)
+    const result = await orcaJson(deps, launchArgs(ws, settings, prompt))
     const handle = result?.outcome?.handle
     if (!handle) {
-      throw new MteError('orca_failed', 'The orca CLI did not report the launched terminal.')
+      throw new MteError('orca_failed', 'The orca CLI did not report the launched session.')
     }
-    return handle
+    const surface = result.outcome.kind === 'chat' || result.outcome.kind === 'terminal' ? result.outcome.kind : settings.plannerSurface
+    return { terminalId: handle, surface, fallback: surface !== settings.plannerSurface }
   } catch (error) {
     if (error?.code !== 'orca_missing') {
       throw error
     }
   }
   const { terminalId } = await deps.host.call('agent.launch', { workspaceId: ws.id, agent: settings.plannerAgent, prompt })
-  return terminalId
+  return { terminalId, surface: 'terminal', fallback: settings.plannerSurface !== 'terminal' }
 }
 
 /** `mte` usable? ENOENT means missing; a non-zero `--version` exit (e.g. a global npm install that Node cannot type-strip) means unusable. */
@@ -503,3 +528,96 @@ export async function ensureSetup(deps, { force = false } = {}) {
 
 export const isDepthReminderDismissed = async (storage) => Boolean(await storage.get(DEPTH_REMINDER_KEY))
 export const dismissDepthReminder = (storage) => storage.set(DEPTH_REMINDER_KEY, true)
+
+// ---- panel v2: harness / model lists and goal search ----
+
+/** Installed harnesses: `orca agent installed --json` -> [{ id, name, default }]. */
+export async function listHarnesses(deps) {
+  const res = await orcaJson(deps, ['agent', 'installed'])
+  return (res.agents ?? []).map((a) => ({ id: a.id, name: a.name ?? a.id, default: Boolean(a.default) }))
+}
+
+// No stock API lists models: seed the stable ids and always let the person type one.
+export const MODEL_SEEDS = {
+  claude: ['fable', 'opus', 'sonnet', 'haiku'],
+  codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.2-codex']
+}
+const MODELS_TTL_MS = 10 * 60_000
+
+/** `opencode models` prints one `provider/id` per line. */
+export const parseModelLines = (stdout) =>
+  [...new Set(String(stdout ?? '').split('\n').map((l) => l.trim()).filter((l) => /^[\w.-]+\/\S+$/.test(l)))]
+
+/** Models + effort values for one harness; opencode is probed (cached in plugin storage). */
+export async function listModels(deps, { agent }) {
+  let ids = MODEL_SEEDS[agent] ?? []
+  if (agent === 'opencode') {
+    const cached = await deps.storage?.get('models:opencode')
+    if (cached && Date.now() - cached.at < MODELS_TTL_MS) {
+      ids = cached.ids
+    } else {
+      const res = await tryExec(deps, 'opencode', ['models'], { timeoutMs: 20_000 })
+      ids = res.code === 0 ? parseModelLines(res.stdout) : []
+      if (ids.length) {
+        await deps.storage?.set('models:opencode', { at: Date.now(), ids })
+      }
+    }
+  }
+  return { models: ids.map((id) => ({ id })), efforts: effortsFor(agent) }
+}
+
+/** `owner/repo` of a GitHub remote url (https or ssh), else null. */
+export function parseGithubRepo(url) {
+  const m = /github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?\s*$/.exec(String(url ?? ''))
+  return m ? `${m[1]}/${m[2]}` : null
+}
+
+const LIMIT = 5
+
+/**
+ * One merged suggestion list for the goal box: Linear issues (`orca linear search`) plus GitHub PRs and issues
+ * (`gh search`, scoped to the workspace's GitHub remote). A source that fails is omitted and named in `hints`.
+ * `isStale()` is checked after the awaits: a superseded call resolves { stale: true } and the panel drops it.
+ */
+export async function searchGoal(deps, { q }, { isStale = () => false } = {}) {
+  const query = String(q ?? '').trim()
+  if (query.length < 2) {
+    return { items: [], hints: [] }
+  }
+  const ws = await resolveWorkspace(deps.host).catch(() => null)
+  const hints = []
+  const linear = async () => {
+    try {
+      const res = await orcaJson(deps, ['linear', 'search', query, '--limit', String(LIMIT), '--workspace', 'all'])
+      return (res.issues ?? []).slice(0, LIMIT).map((i) => ({ kind: 'linear', id: i.identifier, title: i.title, url: i.url }))
+    } catch {
+      hints.push('Linear is not connected (or unavailable): connect it in Orca to search issues.')
+      return []
+    }
+  }
+  const github = async () => {
+    const remote = ws && (await tryExec(deps, 'git', ['-C', ws.path, 'remote', 'get-url', 'origin'], { timeoutMs: 10_000 }).catch(() => null))
+    const repo = remote?.code === 0 ? parseGithubRepo(remote.stdout) : null
+    if (!repo) {
+      hints.push('No GitHub remote found in this workspace: PRs and issues are not searched.')
+      return []
+    }
+    const one = async (kind, sub) => {
+      const res = await tryExec(deps, 'gh', ['search', sub, query, '--repo', repo, '--limit', String(LIMIT), '--json', 'number,title,url'], { timeoutMs: 15_000 })
+      if (res.missing || res.code !== 0) {
+        throw new Error('gh')
+      }
+      return JSON.parse(res.stdout).map((r) => ({ kind, id: `#${r.number}`, title: r.title, url: r.url }))
+    }
+    const [prs, issues] = await Promise.allSettled([one('pr', 'prs'), one('issue', 'issues')])
+    if (prs.status === 'rejected' || issues.status === 'rejected') {
+      hints.push('GitHub search failed: is `gh` installed and logged in (`gh auth login`)?')
+    }
+    return [...(prs.value ?? []), ...(issues.value ?? [])]
+  }
+  const [lin, gh] = await Promise.all([linear(), github()])
+  if (isStale()) {
+    return { stale: true, items: [], hints: [] }
+  }
+  return { items: [...lin, ...gh], hints }
+}

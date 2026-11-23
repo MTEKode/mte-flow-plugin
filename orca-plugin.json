@@ -3,7 +3,7 @@
   "execution": "trusted-worker",
   "id": "mte-flow",
   "name": "MTE Flow",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Start and watch MTE Flow runs on stock Orca: install MTE in a workspace, pin the worker agent, launch the planner and follow runs and workers.",
   "engines": {
     "orca": ">=1.4.248"
@@ -16,14 +16,25 @@
         "id": "mte",
         "title": "MTE Flow",
         "icon": "rocket",
-        "entry": "src/panel.tsx",
-        "ui": "components"
+        "entry": "panel/index.html",
+        "ui": "html"
       }
     ],
     "commands": [
-      { "id": "mte.startRun", "title": "MTE: Start run", "when": "workspace" },
-      { "id": "mte.install", "title": "MTE: Install in workspace", "when": "workspace" },
-      { "id": "mte.openPanel", "title": "MTE: Open panel" }
+      {
+        "id": "mte.startRun",
+        "title": "MTE: Start run",
+        "when": "workspace"
+      },
+      {
+        "id": "mte.install",
+        "title": "MTE: Install in workspace",
+        "when": "workspace"
+      },
+      {
+        "id": "mte.openPanel",
+        "title": "MTE: Open panel"
+      }
     ],
     "statusBarItems": [
       {
@@ -38,10 +49,8 @@
       {
         "key": "plannerAgent",
         "title": "Planner agent",
-        "description": "Agent that runs the MTE planner in a terminal.",
+        "description": "Agent that runs the MTE planner.",
         "type": "string",
-        "enum": ["claude", "opencode"],
-        "enumLabels": ["Claude Code", "opencode"],
         "default": "claude"
       },
       {
@@ -53,12 +62,33 @@
         "default": ""
       },
       {
+        "key": "plannerSurface",
+        "title": "Planner surface",
+        "description": "How the planner opens: native chat or a terminal. Workers always run in terminals.",
+        "type": "string",
+        "enum": [
+          "chat",
+          "terminal"
+        ],
+        "enumLabels": [
+          "Chat",
+          "Terminal"
+        ],
+        "default": "chat"
+      },
+      {
+        "key": "plannerEffort",
+        "title": "Planner effort",
+        "description": "Reasoning effort for the planner (claude, codex, pi). Needs a planner model.",
+        "type": "string",
+        "placeholder": "agent default",
+        "default": ""
+      },
+      {
         "key": "workerAgent",
         "title": "Worker agent",
         "description": "Agent pinned for the workers the planner dispatches.",
         "type": "string",
-        "enum": ["claude", "opencode"],
-        "enumLabels": ["Claude Code", "opencode"],
         "default": "claude"
       },
       {
@@ -72,7 +102,7 @@
       {
         "key": "workerEffort",
         "title": "Worker effort",
-        "description": "Reasoning effort for the pinned worker. Ignored for opencode.",
+        "description": "Reasoning effort for the pinned worker (claude, codex, pi); ignored for other agents.",
         "type": "string",
         "placeholder": "e.g. high (optional)",
         "default": ""
@@ -87,11 +117,23 @@
     ]
   },
   "capabilities": [
-    { "kind": "settings:own" },
-    { "kind": "storage:own" },
-    { "kind": "workspace:read" },
-    { "kind": "workspace:write" },
-    { "kind": "agent:read" },
-    { "kind": "agent:launch" }
+    {
+      "kind": "settings:own"
+    },
+    {
+      "kind": "storage:own"
+    },
+    {
+      "kind": "workspace:read"
+    },
+    {
+      "kind": "workspace:write"
+    },
+    {
+      "kind": "agent:read"
+    },
+    {
+      "kind": "agent:launch"
+    }
   ]
 }

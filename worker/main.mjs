@@ -9,18 +9,23 @@ import {
   focusWorkspace,
   installInWorkspace,
   isDepthReminderDismissed,
+  listHarnesses,
+  listModels,
   listOrchestration,
   openPanel,
   readSettings,
   resolveOrcaCli,
   resolveWorkspace,
+  searchGoal,
   startRun,
   statusText
 } from './lib.mjs'
 
 const POLL_MS = 15_000
 let timer
-const SETTING_KEYS = ['plannerAgent', 'plannerModel', 'workerAgent', 'workerModel', 'workerEffort', 'mteBin']
+const SETTING_KEYS = ['plannerAgent', 'plannerModel', 'plannerSurface', 'plannerEffort', 'workerAgent', 'workerModel', 'workerEffort', 'mteBin']
+const CHOICE_KEYS = SETTING_KEYS.slice(0, -1)
+let searchSeq = 0
 
 /** @type {import('orca/worker').Activate} */
 export default async function activate(orca) {
@@ -82,7 +87,8 @@ export default async function activate(orca) {
   }
 
   async function snapshot() {
-    const settings = await readSettings(host)
+    // the last selection made in the panel (storage) beats the declared settings, which only seed it
+    const settings = { ...(await readSettings(host)), ...((await orca.storage.get('choices')) ?? {}) }
     const [orchestration, mte, workspace] = await Promise.all([
       listOrchestration(deps),
       checkMte(deps, settings),
@@ -105,7 +111,16 @@ export default async function activate(orca) {
   }
 
   orca.panels.handle('state.get', () => snapshot())
-  orca.panels.handle('run.start', async (input) => afterMutation(await startRun(deps, input)))
+  orca.panels.handle('run.start', async (input) => {
+    await orca.storage.set('choices', Object.fromEntries(CHOICE_KEYS.filter((k) => typeof input?.[k] === 'string').map((k) => [k, input[k]])))
+    return afterMutation(await startRun(deps, input))
+  })
+  orca.panels.handle('harness.list', async () => ({ harnesses: await listHarnesses(deps).catch(() => []) }))
+  orca.panels.handle('models.list', ({ agent }) => listModels(deps, { agent }))
+  orca.panels.handle('goal.search', (input) => {
+    const mine = ++searchSeq
+    return searchGoal(deps, input, { isStale: () => mine !== searchSeq })
+  })
   orca.panels.handle('workspace.install', async () => afterMutation(await installInWorkspace(deps)))
   orca.panels.handle('setup.repair', () => runSetup(true))
   orca.panels.handle('reminder.dismiss', async () => {

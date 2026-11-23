@@ -10,8 +10,14 @@ import {
   REQUIRED_MTE_VERSION,
   tarballUrl,
   installInWorkspace,
+  launchArgs,
+  listHarnesses,
+  listModels,
   listOrchestration,
+  parseGithubRepo,
+  parseModelLines,
   resolveOrcaCli,
+  searchGoal,
   startRun,
   statusText,
   TRUNCATION_MARKER
@@ -99,7 +105,7 @@ test('start run: planner show, install, pin set, then the orca CLI launch with /
   assert.deepEqual(seq[2].args, ['pin', 'set', '--agent', 'claude', '--model', 'claude-sonnet-5-5', '--effort', 'high'])
   assert.equal(seq[2].cwd, '/repo/feat')
   assert.deepEqual(seq[3].args, [
-    'agent', 'launch', '--agent', 'claude', '--worktree', 'path:/repo/feat', '--surface', 'terminal',
+    'agent', 'launch', '--agent', 'claude', '--worktree', 'path:/repo/feat', '--surface', 'chat',
     '--prompt', '/mte-flow build the thing', '--json'
   ])
   assert.deepEqual(seq[3].env, { ORCA_USER_DATA_PATH: '/ud' })
@@ -110,7 +116,7 @@ test('start run passes the planner model to the launch and keeps the prompt unde
   const { deps, calls } = stubs({ settings: { plannerModel: 'claude-opus-5-5' } })
   await startRun(deps, { goal: 'g'.repeat(9000) })
   const launch = calls.find((c) => c.args?.[0] === 'agent')
-  assert.deepEqual(launch.args.slice(-3, -1), ['--model', 'claude-opus-5-5'])
+  assert.deepEqual(launch.args.slice(launch.args.indexOf('--model'), launch.args.indexOf('--model') + 2), ['--model', 'claude-opus-5-5'])
   const prompt = launch.args[launch.args.indexOf('--prompt') + 1]
   assert.ok(prompt.length < 4096)
   assert.ok(prompt.startsWith('/mte-flow g'))
@@ -439,5 +445,127 @@ test('manifest defaults: claude planner, claude worker, sonnet model, no effort;
   const defaults = Object.fromEntries(manifest.contributes.settings.map((s) => [s.key, s.default]))
   assert.deepEqual([defaults.plannerAgent, defaults.workerAgent, defaults.workerModel, defaults.workerEffort], ['claude', 'claude', 'sonnet', ''])
   assert.ok(manifest.capabilities.some((c) => c.kind === 'storage:own'))
-  assert.equal(manifest.version, '0.3.0')
+  assert.equal(manifest.version, '0.4.0')
+  assert.equal(manifest.contributes.panels[0].ui, 'html')
+  assert.equal(defaults.plannerSurface, 'chat')
+})
+
+// ---- panel v2 ----
+
+const orcaOut = (result) => ({ code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: '' })
+const ORCA = '/App/Resources/bin/orca'
+
+test('AC2: launch argv for chat/terminal, with and without model/effort; effort needs model and a supporting agent', () => {
+  const ws = { path: '/w' }
+  const base = { plannerAgent: 'claude', plannerSurface: 'chat', plannerModel: '', plannerEffort: 'high' }
+  assert.deepEqual(launchArgs(ws, base, 'P'), ['agent', 'launch', '--agent', 'claude', '--worktree', 'path:/w', '--surface', 'chat', '--prompt', 'P'])
+  assert.deepEqual(launchArgs(ws, { ...base, plannerSurface: 'terminal', plannerModel: 'opus' }, 'P'), ['agent', 'launch', '--agent', 'claude', '--worktree', 'path:/w', '--surface', 'terminal', '--model', 'opus', '--effort', 'high', '--prompt', 'P'])
+  assert.ok(!launchArgs(ws, { ...base, plannerAgent: 'opencode', plannerModel: 'p/m' }, 'P').includes('--effort'))
+})
+
+test('AC2: start run uses the panel selection, reports a chat->terminal fallback and pins the worker selection', async () => {
+  const { deps, calls } = stubs({
+    exec: async (file, args, opts) => {
+      calls.push({ kind: 'exec', file, args, cwd: opts?.cwd })
+      if (file === ORCA) return orcaOut({ outcome: { kind: 'terminal', handle: 'term-9' } })
+      if (args[0] === 'planner') return { code: 0, stdout: '{"claimed":false}', stderr: '' }
+      return { code: 0, stdout: '', stderr: '' }
+    }
+  })
+  const res = await startRun(deps, { goal: 'x', plannerAgent: 'codex', plannerSurface: 'chat', plannerModel: 'gpt-5.5', plannerEffort: 'xhigh', workerAgent: 'pi', workerModel: 'a/b', workerEffort: 'low' })
+  assert.equal(res.ok, true)
+  assert.deepEqual([res.surface, res.fallback, res.terminalId], ['terminal', true, 'term-9'])
+  const launch = calls.find((c) => c.file === ORCA)
+  assert.deepEqual(launch.args.slice(0, 8), ['agent', 'launch', '--agent', 'codex', '--worktree', 'path:/repo/feat', '--surface', 'chat'])
+  assert.ok(launch.args.join(' ').includes('--model gpt-5.5 --effort xhigh'))
+  assert.deepEqual(calls.find((c) => c.args?.[0] === 'pin').args, ['pin', 'set', '--agent', 'pi', '--model', 'a/b', '--effort', 'low'])
+})
+
+test('AC2: a chat handle (orca_session_id) is returned as-is with no fallback', async () => {
+  const { deps } = stubs({
+    exec: async (file, args) => (file === ORCA ? orcaOut({ outcome: { kind: 'chat', handle: 'orca_session_id:abc' } }) : { code: 0, stdout: args[0] === 'planner' ? '{"claimed":false}' : '', stderr: '' })
+  })
+  const res = await startRun(deps, { goal: 'x' })
+  assert.deepEqual([res.terminalId, res.surface, res.fallback], ['orca_session_id:abc', 'chat', false])
+})
+
+test('AC1: harness.list and models.list parse the real output shapes; effort hidden for opencode', async () => {
+  const agents = { agents: [{ id: 'claude', name: 'Claude', default: true }, { id: 'opencode', name: 'OpenCode', default: false }] }
+  const { deps } = stubs({
+    exec: async (file, args) => (file === ORCA ? orcaOut(agents) : { code: 0, stdout: 'bailian/qwen3.6-flash\nbailian/qwen3.7-max\nnoise line\nbailian/qwen3.6-flash\n', stderr: '' })
+  })
+  deps.storage = { get: async () => null, set: async () => undefined }
+  assert.deepEqual(await listHarnesses(deps), [{ id: 'claude', name: 'Claude', default: true }, { id: 'opencode', name: 'OpenCode', default: false }])
+  const oc = await listModels(deps, { agent: 'opencode' })
+  assert.deepEqual(oc.models.map((m) => m.id), ['bailian/qwen3.6-flash', 'bailian/qwen3.7-max'])
+  assert.deepEqual(oc.efforts, [])
+  const cl = await listModels(deps, { agent: 'claude' })
+  assert.deepEqual(cl.models.map((m) => m.id), ['fable', 'opus', 'sonnet', 'haiku'])
+  assert.ok(cl.efforts.includes('max'))
+  assert.deepEqual(parseModelLines('a/b\n\n  c/d  \n'), ['a/b', 'c/d'])
+})
+
+test('AC1: opencode models are cached in storage', async () => {
+  let probes = 0
+  const mem = new Map()
+  const { deps } = stubs({ exec: async () => (probes++, { code: 0, stdout: 'p/m\n', stderr: '' }) })
+  deps.storage = { get: async (k) => mem.get(k) ?? null, set: async (k, v) => void mem.set(k, v) }
+  await listModels(deps, { agent: 'opencode' })
+  await listModels(deps, { agent: 'opencode' })
+  assert.equal(probes, 1)
+})
+
+function searchStubs({ linear, gh = {}, remote = 'git@github.com:MTEKode/mte-flow-plugin.git' } = {}) {
+  const calls = []
+  const { deps } = stubs({
+    exec: async (file, args) => {
+      calls.push([file, ...args])
+      if (file === ORCA) return linear ? orcaOut(linear) : { code: 1, stdout: '', stderr: 'Linear not connected' }
+      if (file === 'git') return remote ? { code: 0, stdout: remote + '\n', stderr: '' } : { code: 1, stdout: '', stderr: '' }
+      if (file === 'gh') {
+        if (gh.missing) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        return args[1] === 'prs' ? (gh.prs ?? { code: 0, stdout: '[{"number":7,"title":"Fix","url":"u7"}]', stderr: '' }) : (gh.issues ?? { code: 0, stdout: '[{"number":3,"title":"Bug","url":"u3"}]', stderr: '' })
+      }
+    }
+  })
+  return { deps, calls }
+}
+const LINEAR = { issues: [{ identifier: 'ENG-1', title: 'Linear one', url: 'lu' }] }
+
+test('AC1: goal.search merges Linear + GitHub PRs/issues with the exact CLI calls', async () => {
+  const { deps, calls } = searchStubs({ linear: LINEAR })
+  const res = await searchGoal(deps, { q: 'fix' })
+  assert.deepEqual(res.items.map((i) => `${i.kind}:${i.id}`), ['linear:ENG-1', 'pr:#7', 'issue:#3'])
+  assert.deepEqual(res.hints, [])
+  assert.deepEqual(calls.find((c) => c[0] === ORCA), [ORCA, 'linear', 'search', 'fix', '--limit', '5', '--workspace', 'all', '--json'])
+  assert.deepEqual(calls.find((c) => c[0] === 'gh' && c[2] === 'prs'), ['gh', 'search', 'prs', 'fix', '--repo', 'MTEKode/mte-flow-plugin', '--limit', '5', '--json', 'number,title,url'])
+  assert.deepEqual(calls.find((c) => c[2] === 'issues').slice(0, 3), ['gh', 'search', 'issues'])
+})
+
+test('AC1: goal.search degrades: no Linear, no gh, no remote -> that source omitted with a hint', async () => {
+  const noLinear = await searchGoal(searchStubs({}).deps, { q: 'fix' })
+  assert.deepEqual(noLinear.items.map((i) => i.kind), ['pr', 'issue'])
+  assert.match(noLinear.hints[0], /Linear/)
+  const noGh = await searchGoal(searchStubs({ linear: LINEAR, gh: { missing: true } }).deps, { q: 'fix' })
+  assert.deepEqual(noGh.items.map((i) => i.kind), ['linear'])
+  assert.match(noGh.hints[0], /gh/)
+  const noRemote = await searchGoal(searchStubs({ linear: LINEAR, remote: '' }).deps, { q: 'fix' })
+  assert.deepEqual(noRemote.items.map((i) => i.kind), ['linear'])
+  assert.match(noRemote.hints[0], /GitHub remote/)
+  const partial = await searchGoal(searchStubs({ linear: LINEAR, gh: { prs: { code: 1, stdout: '', stderr: 'x' } } }).deps, { q: 'fix' })
+  assert.deepEqual(partial.items.map((i) => i.kind), ['linear', 'issue'])
+})
+
+test('AC1: a stale goal.search resolves { stale: true }; short queries do no work', async () => {
+  const { deps, calls } = searchStubs({ linear: LINEAR })
+  assert.equal((await searchGoal(deps, { q: 'fix' }, { isStale: () => true })).stale, true)
+  const before = calls.length
+  assert.deepEqual(await searchGoal(deps, { q: 'a' }), { items: [], hints: [] })
+  assert.equal(calls.length, before)
+})
+
+test('parseGithubRepo handles ssh and https remotes', () => {
+  assert.equal(parseGithubRepo('git@github.com:a/b.git'), 'a/b')
+  assert.equal(parseGithubRepo('https://github.com/a/b'), 'a/b')
+  assert.equal(parseGithubRepo('https://gitlab.com/a/b'), null)
 })
