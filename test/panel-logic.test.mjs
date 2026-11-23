@@ -64,5 +64,8 @@ test('AC3: the panel only uses --orca-* colors (no hard-coded hex)', async () =>
   for (const f of ['index.html', 'panel.js', 'logic.mjs']) {
     const text = await readFile(new URL(`../panel/${f}`, import.meta.url), 'utf8')
     assert.ok(!/#[0-9a-fA-F]{3,8}\b/.test(text), `${f} has a hex color`)
+    // rgb()/rgba()/hsl() literals are only allowed as a var() fallback
+    const bare = text.replace(/var\([^()]*(?:\([^()]*\)[^()]*)*\)/g, '')
+    assert.ok(!/\b(?:rgba?|hsla?)\(/i.test(bare), `${f} has a color function literal`)
   }
 })
