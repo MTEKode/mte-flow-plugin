@@ -16,19 +16,29 @@ export const tarballUrl = (version) =>
   `https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v${version}/mtekode-mte-${version}.tgz`
 export const INSTALL_HINT = `npm i -g ${tarballUrl(REQUIRED_MTE_VERSION)} (Node >= ${MIN_NODE_MAJOR}; from a checkout: cd packages/mte && npm link)`
 
-/** `/mte-flow <goal>`, with the goal cut (and marked) so the whole prompt fits the host cap. */
-export function buildBootstrapPrompt(goal) {
+/** `/mte-flow <goal>` plus an optional trailing `note`, with the goal cut (and marked) so the whole prompt fits the host cap. */
+export function buildBootstrapPrompt(goal, note = '') {
   const prefix = '/mte-flow '
+  const suffix = note ? `\n\n${note}` : ''
   const text = String(goal).trim()
-  if (prefix.length + text.length <= PROMPT_MAX) {
-    return prefix + text
+  if (prefix.length + text.length + suffix.length <= PROMPT_MAX) {
+    return prefix + text + suffix
   }
-  let cut = text.slice(0, PROMPT_MAX - prefix.length - TRUNCATION_MARKER.length)
+  let cut = text.slice(0, PROMPT_MAX - prefix.length - TRUNCATION_MARKER.length - suffix.length)
   // Do not leave half a surrogate pair behind.
   if (/[\uD800-\uDBFF]$/.test(cut)) {
     cut = cut.slice(0, -1)
   }
-  return prefix + cut + TRUNCATION_MARKER
+  return prefix + cut + TRUNCATION_MARKER + suffix
+}
+
+const describeChoice = (agent, model, effort) => [agent, model || 'default model', effort].filter(Boolean).join(' · ')
+
+/** One line the planner repeats in its first reply, so the chat itself says which models run the planner and the workers. */
+export function setupNote(settings) {
+  const planner = describeChoice(settings.plannerAgent, takesModel(settings.plannerAgent) ? settings.plannerModel : '', settings.plannerModel && effortsFor(settings.plannerAgent).length ? settings.plannerEffort : '')
+  const worker = describeChoice(settings.workerAgent, takesModel(settings.workerAgent) ? settings.workerModel : '', settings.workerModel && effortsFor(settings.workerAgent).length ? settings.workerEffort : '')
+  return `(Run setup from the MTE Flow panel. Orchestrator: ${planner}. Workers: ${worker}. State both in your first reply.)`
 }
 
 export class MteError extends Error {
@@ -318,10 +328,17 @@ export async function startRun(deps, input = {}) {
       return releaseErr
     }
   }
-  const prompt = buildBootstrapPrompt(goal)
+  const prompt = buildBootstrapPrompt(goal, setupNote(settings))
   try {
     const launched = await launchPlanner(deps, ws, settings, prompt)
-    return { ok: true, workspace: ws, ...launched, pinned: Boolean(pin), truncated: prompt.endsWith(TRUNCATION_MARKER), replacedStale: Boolean(stale) }
+    // Orca does not record who coordinates a run or which model a worker runs: remember it for the panel
+    await recordLaunch(deps, launched.sessionId ?? launched.terminalId, {
+      goal: String(goal).trim().slice(0, 200),
+      workspacePath: ws.path,
+      at: Date.now(),
+      ...Object.fromEntries(['plannerAgent', 'plannerModel', 'plannerEffort', 'plannerSurface', 'workerAgent', 'workerModel', 'workerEffort'].map((k) => [k, settings[k]]))
+    })
+    return { ok: true, workspace: ws, ...launched, pinned: Boolean(pin), truncated: prompt.includes(TRUNCATION_MARKER), replacedStale: Boolean(stale) }
   } catch (error) {
     return fail('launch', String(error?.code ?? 'action_failed'), String(error?.message ?? error))
   }
@@ -356,7 +373,7 @@ async function launchPlanner(deps, ws, settings, prompt) {
     // real Orca reports a chat session as kind 'structured' (handle `structured-agent-session-<uuid>`)
     const kind = result.outcome.kind
     const surface = kind === 'structured' || kind === 'chat' ? 'chat' : kind === 'terminal' ? 'terminal' : settings.plannerSurface
-    return { terminalId: handle, surface, fallback: surface !== settings.plannerSurface }
+    return { terminalId: handle, sessionId: result.outcome.sessionId, surface, fallback: surface !== settings.plannerSurface }
   } catch (error) {
     if (error?.code !== 'orca_missing') {
       throw error
@@ -406,32 +423,108 @@ async function orcaJson(deps, args) {
   return parsed.result ?? parsed
 }
 
-export const isActiveWorker = (w) => w.outcome === 'in_progress' && w.liveness !== 'dead'
+// a worker whose process Orca reports gone is not running, whatever its dispatch still says
+const GONE = ['exited', 'dead']
+export const isActiveWorker = (w) => w.outcome === 'in_progress' && !GONE.includes(w.liveness)
 
-/** Runs and workers from the stock orchestration CLI. Never throws: failures come back as `error`. */
+/** Active workers (with the run each belongs to) and recent runs from the stock orchestration CLI. Never throws: failures come back as `error`. */
 export async function listOrchestration(deps) {
   try {
     const [workers, runs] = await Promise.all([
-      orcaJson(deps, ['orchestration', 'worker-list', '--limit', '100']),
+      orcaJson(deps, ['orchestration', 'worker-list', '--terminal-state', 'active', '--limit', '100', '--full']),
       orcaJson(deps, ['orchestration', 'run-list'])
     ])
     return {
-      workers: (workers.workers ?? []).map((w) => ({
-        dispatchId: w.dispatchId,
-        taskId: w.taskId ?? '',
-        agent: w.agent ?? '',
-        state: w.state ?? '',
-        outcome: w.outcome ?? '',
-        liveness: w.liveness ?? '',
-        workspace: w.workspace ?? '',
-        active: isActiveWorker(w)
-      })),
-      runs: (runs.runs ?? []).slice(0, 10).map((r) => ({ id: r.id, objective: r.objective ?? '' })),
+      workers: (workers.workers ?? [])
+        .map((w) => {
+          const p = w.projection ?? {}
+          return {
+            dispatchId: w.dispatchId,
+            taskId: w.taskId ?? '',
+            runId: w.runId ?? '',
+            state: p.stage?.worker ?? w.workerState ?? '',
+            activity: p.stage?.activity ?? '',
+            outcome: p.outcome ?? '',
+            liveness: p.liveness?.verdict ?? '',
+            workspace: p.workspace?.id ?? w.resource?.worktreeId ?? '',
+            attention: p.attention?.requiresAction === true
+          }
+        })
+        .filter(isActiveWorker),
+      runs: (runs.runs ?? []).map((r) => ({ id: r.id, objective: r.objective ?? '' })),
       error: null
     }
   } catch (error) {
     return { workers: [], runs: [], error: { code: error?.code ?? 'orca_failed', message: String(error?.message ?? error) } }
   }
+}
+
+const LAUNCHES_KEY = 'launches'
+const workspacePath = (id) => (id.includes('::') ? id.split('::').slice(1).join('::') : id)
+
+/** Remembers what a planner was started with, keyed by its Orca session id (chat) or terminal handle. */
+export async function recordLaunch(deps, key, record) {
+  if (!deps.storage || !key) {
+    return
+  }
+  await deps.storage.set(LAUNCHES_KEY, { ...((await deps.storage.get(LAUNCHES_KEY)) ?? {}), [key]: record })
+}
+
+/** Launch records whose planner is still open; closed ones are forgotten. A failed liveness check keeps the record. */
+async function liveLaunches(deps) {
+  const stored = (await deps.storage?.get(LAUNCHES_KEY)) ?? {}
+  const keys = Object.keys(stored)
+  if (!keys.length) {
+    return {}
+  }
+  const terminals = keys.some((k) => k.startsWith('term_'))
+    ? await orcaJson(deps, ['terminal', 'list']).then((r) => (r.terminals ?? []).map((t) => t.handle)).catch(() => null)
+    : null
+  const live = {}
+  await Promise.all(
+    keys.map(async (key) => {
+      const closed = key.startsWith('term_') ? terminals !== null && !terminals.includes(key) : await isClaimStale(deps, { sessionId: key })
+      if (!closed) {
+        live[key] = stored[key]
+      }
+    })
+  )
+  if (Object.keys(live).length !== keys.length) {
+    await deps.storage.set(LAUNCHES_KEY, live)
+  }
+  return live
+}
+
+/**
+ * Running orchestrators, each with its active workers: one entry per run that has active workers, plus planners
+ * started from the panel that have none yet. A run is tied to its planner through the planner claim of the repo its
+ * workers run in; `launch` (what the planner and its workers were started with) is null for planners not started here.
+ */
+export async function listOrchestrators(deps) {
+  const settings = await readSettings(deps.host)
+  const { workers, runs, error } = await listOrchestration(deps)
+  const launches = await liveLaunches(deps).catch(() => ({}))
+  const byRun = new Map()
+  for (const w of workers) {
+    byRun.set(w.runId, [...(byRun.get(w.runId) ?? []), w])
+  }
+  const used = new Set()
+  const orchestrators = await Promise.all(
+    [...byRun].map(async ([runId, list]) => {
+      const claim = await readClaim(deps, settings, workspacePath(list[0].workspace)).catch(() => null)
+      const key = [claim?.claim?.sessionId, claim?.claim?.terminalHandle].find((k) => k && launches[k])
+      if (key) {
+        used.add(key)
+      }
+      return { id: runId, title: runs.find((r) => r.id === runId)?.objective || runId, launch: key ? launches[key] : null, workers: list }
+    })
+  )
+  for (const [key, launch] of Object.entries(launches)) {
+    if (!used.has(key)) {
+      orchestrators.push({ id: key, title: launch.goal, launch, workers: [] })
+    }
+  }
+  return { orchestrators, activeWorkers: workers.length, error }
 }
 
 /** Focus a worker's workspace: its id is `<repo>::<path>`; resolve it against workspace.list. */
@@ -463,7 +556,7 @@ export async function openPanel(deps) {
 }
 
 export const statusText = (workers) => {
-  const n = workers.filter((w) => w.active).length
+  const n = workers.length
   return { n, text: n > 0 ? `MTE ${n}` : 'MTE', tone: n > 0 ? 'accent' : 'neutral' }
 }
 

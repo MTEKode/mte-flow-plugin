@@ -12,6 +12,7 @@ import {
   listHarnesses,
   listModels,
   listOrchestration,
+  listOrchestrators,
   openPanel,
   readSettings,
   resolveOrcaCli,
@@ -90,7 +91,7 @@ export default async function activate(orca) {
     // the last selection made in the panel (storage) beats the declared settings, which only seed it
     const settings = { ...(await readSettings(host)), ...((await orca.storage.get('choices')) ?? {}) }
     const [orchestration, mte, workspace] = await Promise.all([
-      listOrchestration(deps),
+      listOrchestrators(deps),
       checkMte(deps, settings),
       resolveWorkspace(host).catch(() => null)
     ])

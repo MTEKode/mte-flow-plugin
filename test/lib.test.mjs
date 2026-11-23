@@ -15,6 +15,8 @@ import {
   listHarnesses,
   listModels,
   listOrchestration,
+  listOrchestrators,
+  setupNote,
   parseGithubRepo,
   parseModelLines,
   resolveOrcaCli,
@@ -107,7 +109,7 @@ test('start run: planner show, install, pin set, then the orca CLI launch with /
   assert.equal(seq[2].cwd, '/repo/feat')
   assert.deepEqual(seq[3].args, [
     'agent', 'launch', '--agent', 'claude', '--worktree', 'path:/repo/feat', '--surface', 'chat', '--focus',
-    '--prompt', '/mte-flow build the thing', '--json'
+    '--prompt', `/mte-flow build the thing\n\n${setupNote({ plannerAgent: 'claude', plannerModel: '', workerAgent: 'claude', workerModel: 'claude-sonnet-5-5', workerEffort: 'high' })}`, '--json'
   ])
   assert.deepEqual(seq[3].env, { ORCA_USER_DATA_PATH: '/ud' })
   assert.ok(!calls.some((c) => c.method === 'agent.launch'))
@@ -134,7 +136,7 @@ test('start run falls back to the host agent.launch only when the orca CLI is mi
   })
   const result = await startRun(deps, { goal: 'x' })
   assert.equal(result.ok, true)
-  assert.deepEqual(calls.find((c) => c.method === 'agent.launch').params, { workspaceId: 'wt-1', agent: 'claude', prompt: '/mte-flow x' })
+  assert.deepEqual(calls.find((c) => c.method === 'agent.launch').params, { workspaceId: 'wt-1', agent: 'claude', prompt: `/mte-flow x\n\n${setupNote({ plannerAgent: 'claude', workerAgent: 'claude' })}` })
   const failing = stubs({ exec: async (file) => (file === 'mte' ? { code: 0, stdout: '{"claimed":false}', stderr: '' } : { code: 1, stdout: '', stderr: 'launch refused' }) })
   const res = await startRun(failing.deps, { goal: 'x' })
   assert.equal(res.ok, false)
@@ -203,21 +205,72 @@ test('empty goal and missing workspace are refused before running anything', asy
   assert.equal(a.calls.length, 0)
 })
 
-test('orchestration listing maps the stock CLI JSON and counts active workers', async () => {
+const fullWorker = (dispatchId, runId, outcome, verdict, ws = 'r::/repo/wt') => ({
+  dispatchId, taskId: `t-${dispatchId}`, runId, workerState: 'ready',
+  projection: { stage: { worker: 'ready', activity: 'unknown' }, outcome, liveness: { verdict }, workspace: { id: ws }, attention: { requiresAction: false } }
+})
+
+test('orchestration listing keeps only running workers: finished, exited and dead ones are dropped', async () => {
+  const seen = []
   const exec = async (file, args) => {
+    seen.push(args)
     const out = args.includes('worker-list')
-      ? { ok: true, result: { workers: [
-          { dispatchId: 'd1', taskId: 't1', agent: 'claude/sonnet', state: 'ready', outcome: 'in_progress', liveness: 'live', workspace: 'r::/p' },
-          { dispatchId: 'd2', taskId: 't2', agent: 'claude/sonnet', state: 'done', outcome: 'succeeded', liveness: 'live', workspace: 'r::/q' }
-        ] } }
+      ? { ok: true, result: { workers: [fullWorker('d1', 'run_1', 'in_progress', 'alive'), fullWorker('d2', 'run_1', 'succeeded', 'alive'), fullWorker('d3', 'run_1', 'in_progress', 'exited'), fullWorker('d4', 'run_2', 'in_progress', 'dead')] } }
       : { ok: true, result: { runs: [{ id: 'run_1', objective: 'goal' }] } }
     return { code: 0, stdout: JSON.stringify(out), stderr: '' }
   }
   const listing = await listOrchestration({ exec })
   assert.equal(listing.error, null)
-  assert.equal(listing.runs[0].id, 'run_1')
+  assert.deepEqual(listing.workers.map((w) => [w.dispatchId, w.runId, w.state, w.workspace]), [['d1', 'run_1', 'ready', 'r::/repo/wt']])
+  assert.ok(seen.find((a) => a.includes('worker-list')).join(' ').includes('--terminal-state active'))
   assert.deepEqual(statusText(listing.workers), { n: 1, text: 'MTE 1', tone: 'accent' })
   assert.equal(statusText([]).text, 'MTE')
+})
+
+test('orchestrators: workers are grouped under their run and tied to the planner that started it; a planner without workers still shows; closed planners are forgotten', async () => {
+  const mem = new Map([['launches', {
+    s1: { goal: 'ship it', workspacePath: '/repo', plannerAgent: 'claude', plannerModel: 'opus', workerAgent: 'opencode', workerModel: 'p/m' },
+    s2: { goal: 'second goal', workspacePath: '/other', plannerAgent: 'pi', plannerModel: '' },
+    gone: { goal: 'closed', workspacePath: '/x', plannerAgent: 'claude' }
+  }]])
+  const { deps } = stubs({
+    exec: async (file, args) => {
+      const ok = (result) => ({ code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: '' })
+      if (args.includes('worker-list')) return ok({ workers: [fullWorker('d1', 'run_1', 'in_progress', 'alive'), fullWorker('d2', 'run_1', 'in_progress', 'alive'), fullWorker('d9', 'run_9', 'in_progress', 'alive', 'r2::/elsewhere/wt')] })
+      if (args.includes('run-list')) return ok({ runs: [{ id: 'run_1', objective: 'Ship the thing' }] })
+      if (args[0] === 'agent' && args[1] === 'show') return ok({ places: args[2] === 'gone' ? [] : [{ kind: 'chat' }] })
+      return { code: 0, stdout: '', stderr: '' }
+    }
+  })
+  const base = deps.exec
+  deps.exec = async (file, args, opts) => (args[0] === 'planner' ? { code: 0, stdout: JSON.stringify(opts?.cwd === '/repo/wt' ? { claimed: true, sessionId: 's1' } : { claimed: false }), stderr: '' } : base(file, args, opts))
+  deps.storage = { get: async (k) => mem.get(k) ?? null, set: async (k, v) => void mem.set(k, v) }
+  const { orchestrators, activeWorkers, error } = await listOrchestrators(deps)
+  assert.equal(error, null)
+  assert.equal(activeWorkers, 3)
+  assert.deepEqual(orchestrators.map((o) => [o.id, o.title, o.launch?.plannerModel ?? null, o.workers.map((w) => w.dispatchId)]), [
+    ['run_1', 'Ship the thing', 'opus', ['d1', 'd2']],
+    ['run_9', 'run_9', null, ['d9']],
+    ['s2', 'second goal', '', []]
+  ])
+  assert.deepEqual(Object.keys(mem.get('launches')), ['s1', 's2'])
+})
+
+test('start run records the launch under the planner session and tells the planner the setup in the prompt', async () => {
+  const mem = new Map()
+  const { deps, calls } = stubs({ settings: { plannerAgent: 'claude', plannerModel: 'opus', plannerEffort: 'high', workerAgent: 'opencode', workerModel: 'p/m', workerEffort: 'high' } })
+  const base = deps.exec
+  deps.exec = async (file, args, opts) => (args[0] === 'agent' && args[1] === 'launch' ? (calls.push({ kind: 'exec', file, args }), { code: 0, stdout: JSON.stringify({ ok: true, result: { outcome: { kind: 'structured', handle: 'structured-agent-session-abc', sessionId: 'abc' } } }), stderr: '' }) : base(file, args, opts))
+  deps.storage = { get: async (k) => mem.get(k) ?? null, set: async (k, v) => void mem.set(k, v) }
+  const result = await startRun(deps, { goal: 'build it' })
+  assert.equal(result.ok, true)
+  const launch = mem.get('launches').abc
+  assert.deepEqual([launch.goal, launch.workspacePath, launch.plannerModel, launch.workerAgent, launch.workerModel, launch.workerEffort], ['build it', '/repo/feat', 'opus', 'opencode', 'p/m', 'high'])
+  const prompt = calls.find((c) => c.args?.[1] === 'launch').args.at(-2)
+  assert.ok(prompt.startsWith('/mte-flow build it\n\n(Run setup'))
+  // effort is only named where it is actually sent: opencode takes none
+  assert.match(prompt, /Orchestrator: claude · opus · high\. Workers: opencode · p\/m\. State both/)
+  assert.match(setupNote({ plannerAgent: 'opencode2', plannerModel: 'x/y', workerAgent: 'claude', workerModel: '' }), /Orchestrator: opencode2 · default model\. Workers: claude · default model\./)
 })
 
 test('orchestration listing reports a missing orca CLI instead of throwing', async () => {
@@ -469,7 +522,7 @@ test('manifest defaults: claude planner, claude worker, sonnet model, no effort;
   const defaults = Object.fromEntries(manifest.contributes.settings.map((s) => [s.key, s.default]))
   assert.deepEqual([defaults.plannerAgent, defaults.workerAgent, defaults.workerModel, defaults.workerEffort], ['claude', 'claude', 'sonnet', ''])
   assert.ok(manifest.capabilities.some((c) => c.kind === 'storage:own'))
-  assert.equal(manifest.version, '0.5.0')
+  assert.equal(manifest.version, '0.6.0')
   assert.equal(manifest.contributes.panels[0].ui, 'html')
   assert.equal(defaults.plannerSurface, 'chat')
 })

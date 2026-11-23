@@ -202,6 +202,11 @@ function callout(tone, title, body, ...buttons) {
 }
 const btn = (text, onclick) => el('button', { type: 'button', textContent: text, onclick, disabled: st.busy !== null })
 
+// folded orchestrators stay folded across refreshes
+const closedRuns = new Set()
+const agentBadge = (agent) => harnessIcon(st.harnesses.find((h) => h.id === agent) ?? { id: agent, name: agent })
+const choiceText = (model, effort) => [model || 'default model', effort].filter(Boolean).join(' · ')
+
 function render() {
   const s = st.snap
   const out = []
@@ -214,13 +219,24 @@ function render() {
   if (st.notice) out.push(callout(st.notice.tone, '', st.notice.text))
   $('notices').replaceChildren(...out)
 
-  const workers = s?.workers ?? []
-  $('active').textContent = `${workers.filter((w) => w.active).length} active`
+  $('active').textContent = `${s?.activeWorkers ?? 0} active`
   $('ws').textContent = s?.workspace ? `Workspace: ${s.workspace.name} · ${s.workspace.path}` : 'No workspace focused.'
-  $('workers').replaceChildren(
-    ...(workers.length
-      ? workers.map((w) => el('div', { className: 'worker' }, el('div', {}, el('div', { textContent: `${w.taskId || w.dispatchId} · ${w.agent}` }), el('div', { className: 'muted', textContent: `${w.state} · ${w.outcome} · ${w.liveness}` })), btn('Focus', () => act('focus', () => req('workspace.focus', { workspace: w.workspace }), () => 'Workspace focused.'))))
-      : [el('div', { className: 'worker muted', textContent: s?.error ? s.error.message : 'No workers yet.' })])
+  const runs = s?.orchestrators ?? []
+  $('runs').replaceChildren(
+    ...(runs.length
+      ? runs.map((r) => {
+          const l = r.launch
+          const box = el('details', { className: 'run', open: !closedRuns.has(r.id) },
+            el('summary', {}, ...(l ? [agentBadge(l.plannerAgent)] : []), el('span', { className: 't', textContent: r.title, title: r.title }), ...(l ? [el('span', { className: 'tag', textContent: choiceText(l.plannerModel, l.plannerEffort) })] : []), el('span', { className: 'muted', textContent: `${r.workers.length} worker${r.workers.length === 1 ? '' : 's'}` })),
+            ...(r.workers.length
+              ? r.workers.map((w) => el('div', { className: 'worker' },
+                  el('div', { className: 'who' }, ...(l ? [agentBadge(l.workerAgent)] : []), el('div', {}, el('div', { textContent: w.taskId || w.dispatchId }), el('div', { className: 'muted', textContent: [l && choiceText(l.workerModel, l.workerEffort), w.state, w.activity !== 'unknown' && w.activity, w.attention && 'needs attention'].filter(Boolean).join(' · ') }))),
+                  btn('Focus', () => act('focus', () => req('workspace.focus', { workspace: w.workspace }), () => 'Workspace focused.'))))
+              : [el('div', { className: 'worker muted', textContent: 'No workers running yet.' })]))
+          box.ontoggle = () => (box.open ? closedRuns.delete(r.id) : closedRuns.add(r.id))
+          return box
+        })
+      : [el('div', { className: 'empty muted', textContent: s?.error ? s.error.message : 'No orchestrators running.' })])
   )
   for (const id of ['start', 'install', 'repair']) $(id).disabled = st.busy !== null || (id === 'start' && !st.planner)
   $('start').textContent = st.busy === 'start' ? 'Starting…' : 'Start run'
@@ -230,3 +246,5 @@ orca.plugin.on('state.changed', () => void load())
 orca.on?.('workspace.changed', () => void load())
 void load()
 void loadLists()
+// workers start and finish without any event reaching the panel
+setInterval(() => { if (st.busy === null) void load() }, 15000)

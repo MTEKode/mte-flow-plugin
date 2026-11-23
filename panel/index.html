@@ -56,9 +56,19 @@
   .callout.danger { border-color: var(--orca-destructive); }
   .callout.danger b { color: var(--orca-destructive); }
   .callout.ok { background: var(--orca-accent); }
-  .workers { border: 1px solid var(--orca-border); border-radius: 6px; }
+  .run { border: 1px solid var(--orca-border); border-radius: 6px; }
+  .run summary { display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer; list-style: none; }
+  .run summary::before { content: '▸'; color: var(--orca-muted-foreground); flex: none; }
+  .run[open] summary::before { content: '▾'; }
+  .run summary::-webkit-details-marker { display: none; }
+  .run .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .run img, .run .letter { width: 16px; height: 16px; border-radius: 3px; flex: none; }
+  .who { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+  .who > div { min-width: 0; }
+  .who .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .worker { border-top: 1px solid var(--orca-border); }
+  .empty { border: 1px solid var(--orca-border); border-radius: 6px; padding: 7px 10px; }
   .worker { padding: 6px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .worker + .worker { border-top: 1px solid var(--orca-border); }
   .badge { font-size: 11px; border-radius: 999px; background: var(--orca-primary); color: var(--orca-primary-foreground); padding: 1px 8px; }
   code { font-family: ui-monospace, monospace; font-size: 12px; }
   [hidden] { display: none !important; }
@@ -91,8 +101,8 @@
   <div class="muted" id="ws"></div>
 
   <div class="stack section" style="gap:6px">
-    <span class="label">Workers</span>
-    <div class="workers" id="workers"></div>
+    <span class="label">Orchestrators</span>
+    <div class="stack" id="runs" style="gap:6px"></div>
   </div>
 </div>
 <script type="module" src="panel.js"></script>
