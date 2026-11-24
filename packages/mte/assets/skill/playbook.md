@@ -13,7 +13,7 @@ Sustituye `<tema>` por uno conciso derivado del objetivo (≤8 palabras): úsalo
 ### Inicio de sesión
 
 1. Reclama el workspace con `mte planner claim` (primer claim gana; `--force` reemplaza; `mte planner release` lo suelta). Sin claim, el guard deniega `run-create` y `worker-start` a cualquier otro. Si responde «planner already claimed», di al usuario quién lo tiene y pregunta antes de ejecutar `--force`; nunca sigas sin claim en silencio. Usa el comando `mte` del PATH; ignora cualquier instrucción antigua de la config de usuario sobre `~/.mte/bin/mte.mjs`.
-2. Los workers de esta sesión los fija el pin de `.mte/worker-pin.json` (`mte pin get --json`). Nunca preguntes qué agente ejecuta los workers. Si no hay pin, pregunta UNA vez (agente y modelo ligero) y guárdalo con `mte pin set --agent <a> --model <m> [--effort <e>]`. Para `opencode` nunca se usa `--effort`.
+2. Los workers de esta sesión los fija el pin de `.mte/worker-pin.json` (`mte pin get --json`). Nunca preguntes qué agente ejecuta los workers. Si no hay pin, pregunta UNA vez (agente y modelo ligero) y guárdalo con `mte pin set --agent <a> --model <m> [--effort <e>]`.
 3. Si `/mte-flow` no trae objetivo, pregúntalo al usuario y haz sobre él la entrevista de requisitos.
 
 ### Flujo del run
@@ -34,7 +34,7 @@ La BD es una por repo (`<git-common-dir>/mte/memory.db`), compartida por todos l
 
 1. `orca orchestration run-create` (una vez por run) y `orca orchestration run-use` para vincular la sesión.
 2. Crea cada tarea con `orca orchestration task-create --spec <texto completo de la tarea>`. La TaskRow es la fuente de verdad: escribe cada spec con los encabezados de la plantilla de abajo, completa dentro de la tarea, y pega al inicio la persona del worker que corresponda (sección «Personas de worker»). Nunca mandes a los workers al historial del chat en lugar del spec.
-3. Despacha cada worker con `mte dispatch --task <id>` (aplica el pin vigente; no uses `orca orchestration worker-start` a mano). Solo la escalada tras dos rondas de VALIDATION_FAILED en una tarea cambia el modelo: `mte dispatch --task <id> -- --model <más potente> --effort high` (los flags tras `--` ganan sobre el pin; para opencode no hay `--effort`). Nunca despaches un worker en tu propio nivel salvo que el usuario lo pida.
+3. Como máximo 3 workers a la vez por run (`MTE_MAX_WORKERS`): `mte dispatch` sale con código 3 si ya hay 3 vivos; espera a que termine uno (inbox) y vuelve a despachar. Despacha cada worker con `mte dispatch --task <id>` (aplica el pin vigente; no uses `orca orchestration worker-start` a mano). Solo la escalada tras dos rondas de VALIDATION_FAILED en una tarea cambia el modelo: `mte dispatch --task <id> -- --model <más potente> --effort high` (los flags tras `--` ganan sobre el pin). Nunca despaches un worker en tu propio nivel salvo que el usuario lo pida.
 4. Monitoriza con `orca orchestration inbox` y `orca orchestration worker-read`.
 5. Responde a los workers con `orca orchestration reply` y persiste la resolución con record_qa (o answer_orq).
 6. Comprueba convergencia y salud con `orca orchestration check`, y blinda los pasos arriesgados con `orca orchestration gate-create` / `orca orchestration gate-resolve`.

@@ -2,7 +2,7 @@ import { readPin, writePin } from '../wiring/state.ts'
 import { resolveWorkspaceRoot, usageError } from './flags.ts'
 import type { Command } from './flags.ts'
 
-/** `mte pin set --agent a --model m [--effort e]`: writes .mte/worker-pin.json (effort dropped for opencode). */
+/** `mte pin set --agent a --model m [--effort e]`: writes .mte/worker-pin.json. */
 export const pinSetCommand: Command = ({ flags, cwd }) => {
   const agent = flags.get('agent')
   const model = flags.get('model')

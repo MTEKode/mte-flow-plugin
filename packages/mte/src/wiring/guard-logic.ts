@@ -1,4 +1,4 @@
-import { findInvocations, getFlag, hasFlag, removeFlags, renderBin, shellQuote } from './shell-parse.ts'
+import { findInvocations, getFlag, removeFlags, renderBin, shellQuote } from './shell-parse.ts'
 import type { GateKind, Invocation } from './shell-parse.ts'
 import {
   describeIdentity,
@@ -15,23 +15,14 @@ export type Verdict = { allow: true } | { allow: false; reason: string }
 const ALLOW: Verdict = { allow: true }
 const deny = (reason: string): Verdict => ({ allow: false, reason })
 
-/** The flags a worker-start must carry for this pin (never --effort for opencode). */
+/** The flags a worker-start must carry for this pin. */
 export function pinFlags(pin: WorkerPin): string[] {
-  return [
-    '--agent',
-    pin.agent,
-    '--model',
-    pin.model,
-    ...(pin.effort && pin.agent !== 'opencode' ? ['--effort', pin.effort] : [])
-  ]
+  return ['--agent', pin.agent, '--model', pin.model, ...(pin.effort ? ['--effort', pin.effort] : [])]
 }
 
 function checkPin(inv: Invocation, pin: WorkerPin): Verdict {
   const effort = getFlag(inv.args, 'effort')
-  const effortOk =
-    pin.agent === 'opencode'
-      ? !hasFlag(inv.args, 'effort')
-      : pin.effort === undefined || effort === pin.effort
+  const effortOk = pin.effort === undefined || effort === pin.effort
   if (getFlag(inv.args, 'agent') === pin.agent && getFlag(inv.args, 'model') === pin.model && effortOk) {
     return ALLOW
   }

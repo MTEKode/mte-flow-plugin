@@ -36,8 +36,8 @@ const describeChoice = (agent, model, effort) => [agent, model || 'default model
 
 /** One line the planner repeats in its first reply, so the chat itself says which models run the planner and the workers. */
 export function setupNote(settings) {
-  const planner = describeChoice(settings.plannerAgent, takesModel(settings.plannerAgent) ? settings.plannerModel : '', settings.plannerModel && effortsFor(settings.plannerAgent).length ? settings.plannerEffort : '')
-  const worker = describeChoice(settings.workerAgent, takesModel(settings.workerAgent) ? settings.workerModel : '', settings.workerModel && effortsFor(settings.workerAgent).length ? settings.workerEffort : '')
+  const planner = describeChoice(settings.plannerAgent, settings.plannerModel, settings.plannerModel && effortsFor(settings.plannerAgent).length ? settings.plannerEffort : '')
+  const worker = describeChoice(settings.workerAgent, settings.workerModel, settings.workerModel && effortsFor(settings.workerAgent).length ? settings.workerEffort : '')
   return `(Run setup from the MTE Flow panel. Orchestrator: ${planner}. Workers: ${worker}. State both in your first reply.)`
 }
 
@@ -64,7 +64,7 @@ export function winQuote(arg) {
 }
 
 /**
- * How to start `file` on Windows, where npm-installed CLIs (`mte`, `npm`, `opencode`) are `.cmd` shims that Node will
+ * How to start `file` on Windows, where npm-installed CLIs (`mte`, `npm`) are `.cmd` shims that Node will
  * not start by bare name: the full path of the .exe, or a verbatim `cmd.exe /d /s /c` line for a shim. Null when
  * nothing on PATH matches. Never goes through a shell with unquoted text: goals and model ids are user input.
  */
@@ -155,15 +155,10 @@ export function resolveOrcaCli({
 /** Agents whose launch/worker-start accept `--effort`, and the values each takes (panel-v2 feasibility report, section E). */
 export const EFFORTS = {
   claude: ['low', 'medium', 'high', 'xhigh', 'max'],
-  codex: ['low', 'medium', 'high', 'xhigh'],
-  pi: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   // Orca's own antigravity catalog offers these three for `--effort`
   antigravity: ['low', 'medium', 'high']
 }
 export const effortsFor = (agent) => EFFORTS[agent] ?? []
-/** Harnesses that refuse launch-time `--model`/`--effort` (they run the model from their own config). */
-export const NO_MODEL_AGENTS = ['opencode2', 'droid']
-export const takesModel = (agent) => !NO_MODEL_AGENTS.includes(agent)
 export const SURFACES = ['chat', 'terminal']
 
 /** Reads the plugin settings, with their defaults. */
@@ -228,13 +223,13 @@ async function runMte(deps, settings, stage, args, cwd) {
   return null
 }
 
-/** Always wire both agents: the planner and worker agents are chosen per run, and install is idempotent. */
+/** Wires the Claude skill, hook and memory MCP; install is idempotent. */
 export function installArgs() {
-  return ['install', '--agents', 'claude,opencode']
+  return ['install']
 }
 
 export function pinArgs(settings) {
-  if (!settings.workerModel || !takesModel(settings.workerAgent)) {
+  if (!settings.workerModel) {
     return null
   }
   const args = ['pin', 'set', '--agent', settings.workerAgent, '--model', settings.workerModel]
@@ -264,8 +259,7 @@ export async function installInWorkspace(deps) {
 export function describeClaim(claim) {
   const parts = [
     claim.sessionId && `session ${claim.sessionId}`,
-    claim.terminalHandle && `terminal ${claim.terminalHandle}`,
-    claim.opencodeSessionId && `opencode session ${claim.opencodeSessionId}`
+    claim.terminalHandle && `terminal ${claim.terminalHandle}`
   ].filter(Boolean)
   return parts.join(' / ') || 'an unknown caller'
 }
@@ -389,7 +383,7 @@ export async function startRun(deps, input = {}) {
 /** argv of `orca agent launch` for the planner (without `--json`, which orcaJson appends); `--focus` so the person sees it start (or fail). `--effort` needs `--model` and an agent that takes one. */
 export function launchArgs(ws, settings, prompt) {
   const args = ['agent', 'launch', '--agent', settings.plannerAgent, '--worktree', `path:${ws.path}`, '--surface', settings.plannerSurface, '--focus']
-  if (settings.plannerModel && takesModel(settings.plannerAgent)) {
+  if (settings.plannerModel) {
     args.push('--model', settings.plannerModel)
     if (settings.plannerEffort && effortsFor(settings.plannerAgent).length) {
       args.push('--effort', settings.plannerEffort)
@@ -539,7 +533,7 @@ async function liveLaunches(deps) {
 
 /**
  * Running orchestrators, each with its active workers: one entry per run that has active workers, plus planners
- * started from the panel that have none yet. A run is tied to its planner through the planner claim of the repo its
+ * started from the panel that have none yet. A run is tied to its planner through the planner claim of the worktree its
  * workers run in; `launch` (what the planner and its workers were started with) is null for planners not started here.
  */
 export async function listOrchestrators(deps) {
@@ -691,36 +685,28 @@ export const dismissDepthReminder = (storage) => storage.set(DEPTH_REMINDER_KEY,
 
 // ---- panel v2: harness / model lists and goal search ----
 
-/** Installed harnesses: `orca agent installed --json` -> [{ id, name, default }]. */
+/** The only harnesses MTE Flow runs as planner or worker. */
+export const HARNESSES = ['claude', 'antigravity']
+
+/** Installed supported harnesses: `orca agent installed --json` -> [{ id, name, default }]. */
 export async function listHarnesses(deps) {
   const res = await orcaJson(deps, ['agent', 'installed'])
-  return (res.agents ?? []).map((a) => ({ id: a.id, name: a.name ?? a.id, default: Boolean(a.default) }))
+  return (res.agents ?? []).filter((a) => HARNESSES.includes(a.id)).map((a) => ({ id: a.id, name: a.name ?? a.id, default: Boolean(a.default) }))
 }
 
 // No stock API lists models: seed the stable ids and always let the person type one.
 export const MODEL_SEEDS = {
-  claude: ['fable', 'opus', 'sonnet', 'haiku'],
-  codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.2-codex']
+  claude: ['fable', 'opus', 'sonnet', 'haiku']
 }
 const MODELS_TTL_MS = 10 * 60_000
-
-/** `opencode models` prints one `provider/id` per line. */
-export const parseModelLines = (stdout) =>
-  [...new Set(String(stdout ?? '').split('\n').map((l) => l.trim()).filter((l) => /^[\w.-]+\/\S+$/.test(l)))]
 
 /** `agy models` prints `<id>\t<label>` per line (after a "Fetching…" line). */
 export const parseAgyModels = (stdout) =>
   String(stdout ?? '').split('\n').map((l) => l.split('\t')).filter((c) => c.length >= 2 && /^\S+$/.test(c[0])).map(([id, label]) => ({ id, label: label.trim() }))
 
-/** `pi --list-models` prints a `provider  model  …` table under a header row; Orca takes `provider/id`. */
-export const parsePiModels = (stdout) =>
-  String(stdout ?? '').split('\n').map((l) => l.trim().split(/\s+/)).filter((c) => c.length >= 2 && c[0] !== 'provider').map((c) => ({ id: `${c[0]}/${c[1]}` }))
-
 /** Harnesses whose models are account-scoped: ask their own CLI. */
 const MODEL_PROBES = {
-  opencode: { file: 'opencode', args: ['models'], parse: (out) => parseModelLines(out).map((id) => ({ id })) },
-  antigravity: { file: 'agy', args: ['models'], parse: parseAgyModels },
-  pi: { file: 'pi', args: ['--list-models'], parse: parsePiModels }
+  antigravity: { file: 'agy', args: ['models'], parse: parseAgyModels }
 }
 
 /**
@@ -755,7 +741,7 @@ export async function listModels(deps, { agent }) {
     }
   }
   const extra = readExtraModels(deps, agent).filter((id) => !models.some((m) => m.id === id))
-  return { models: [...models, ...extra.map((id) => ({ id }))], efforts: effortsFor(agent), takesModel: takesModel(agent) }
+  return { models: [...models, ...extra.map((id) => ({ id }))], efforts: effortsFor(agent) }
 }
 
 /** `owner/repo` of a GitHub remote url (https or ssh), else null. */

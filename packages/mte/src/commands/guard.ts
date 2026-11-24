@@ -15,7 +15,7 @@ function claudeDeny(reason: string): string {
 }
 
 /**
- * `mte guard --command <cmd> [--session-id id] [--terminal-handle h] [--opencode-session id] [--workspace p]` (exit 2 = deny, reason on stderr)
+ * `mte guard --command <cmd> [--session-id id] [--terminal-handle h] [--workspace p]` (exit 2 = deny, reason on stderr)
  * or `mte guard --claude-hook` (PreToolUse JSON on stdin, deny JSON on stdout, always exit 0).
  * Internal errors fail OPEN (logged to .mte/guard.log): the guard must never brick an agent's shell.
  */

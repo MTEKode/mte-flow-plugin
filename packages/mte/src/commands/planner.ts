@@ -5,8 +5,7 @@ import type { Command, Flags } from './flags.ts'
 
 const CLAIM_FLAGS = [
   ['sessionId', 'session-id', 'ORCA_AGENT_SESSION_ID'],
-  ['terminalHandle', 'terminal-handle', 'ORCA_TERMINAL_HANDLE'],
-  ['opencodeSessionId', 'opencode-session', 'MTE_OPENCODE_SESSION']
+  ['terminalHandle', 'terminal-handle', 'ORCA_TERMINAL_HANDLE']
 ] as const
 
 /** The caller's environment identity wins; a flag naming a different identity than the env's is refused (no spoofing), flags only fill gaps. */
@@ -16,7 +15,7 @@ function claimIdentity(flags: Flags): Identity | { error: string } {
     const value = flags.get(name)
     return typeof value === 'string' ? value : undefined
   }
-  const given = withIdentity(str('session-id'), str('terminal-handle'), str('opencode-session'))
+  const given = withIdentity(str('session-id'), str('terminal-handle'))
   for (const [key, flag, envName] of CLAIM_FLAGS) {
     if (fromEnv[key] !== undefined && given[key] !== undefined && fromEnv[key] !== given[key]) {
       return { error: `--${flag} ${given[key]} differs from the caller's own ${envName} (${fromEnv[key]}); refusing to claim with another identity` }
@@ -25,7 +24,7 @@ function claimIdentity(flags: Flags): Identity | { error: string } {
   return { ...given, ...fromEnv }
 }
 
-/** `mte planner claim [--force] [--session-id id] [--terminal-handle h] [--opencode-session id]`: first claim wins, --force replaces; records every identity present. */
+/** `mte planner claim [--force] [--session-id id] [--terminal-handle h]`: first claim wins, --force replaces; records every identity present. */
 export const plannerClaimCommand: Command = ({ flags, cwd }) => {
   const root = resolveWorkspaceRoot(flags, cwd)
   if (typeof root !== 'string') {
@@ -36,7 +35,7 @@ export const plannerClaimCommand: Command = ({ flags, cwd }) => {
     return usageError(who.error)
   }
   if (!hasIdentity(who)) {
-    return usageError('no caller identity: pass --session-id/--terminal-handle/--opencode-session (env ORCA_AGENT_SESSION_ID / ORCA_TERMINAL_HANDLE / MTE_OPENCODE_SESSION is empty)')
+    return usageError('no caller identity: pass --session-id/--terminal-handle (env ORCA_AGENT_SESSION_ID / ORCA_TERMINAL_HANDLE is empty)')
   }
   const current = readPlanner(root)
   if (current !== null && !sameCaller(current, who) && flags.get('force') !== true) {

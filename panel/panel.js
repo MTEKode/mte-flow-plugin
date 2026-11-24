@@ -79,7 +79,7 @@ function chooser(field, key, title, withSurface) {
   const harness = el('select', { ariaLabel: `${title} harness` })
   const surface = el('select', { ariaLabel: `${title} surface`, className: 'fit' }, opt('chat', 'Chat'), opt('terminal', 'Terminal'))
   const effort = el('select', { ariaLabel: `${title} effort`, className: 'fit' })
-  const info = () => st.models[st[key].agent] ?? { models: [], efforts: [], takesModel: true }
+  const info = () => st.models[st[key].agent] ?? { models: [], efforts: [] }
   const model = modelPicker(field, title, { rows: () => modelRows(info(), st[key].model), get: () => st[key].model, set: (v) => { st[key].model = v; draw() } })
   field.append(el('div', { className: 'row' }, harness, ...(withSurface ? [surface] : [])), el('div', { className: 'row' }, model.btn, effort))
 
@@ -87,13 +87,12 @@ function chooser(field, key, title, withSurface) {
     const c = st[key]
     if (!c) return
     if (st.models[c.agent]) Object.assign(c, fitSelection(c, st.models[c.agent]))
-    const { efforts, takesModel } = info()
+    const { efforts } = info()
     const listed = st.harnesses.some((h) => h.id === c.agent) ? st.harnesses : [{ id: c.agent, name: c.agent }, ...st.harnesses]
     harness.replaceChildren(el('button', {}, el('selectedcontent')), ...listed.map((h) => opt(h.id, harnessIcon(h), el('span', { textContent: h.name }))))
     harness.value = c.agent
     surface.value = c.surface
     model.label()
-    model.btn.disabled = !takesModel
     effort.replaceChildren(opt('', 'Default effort'), ...efforts.map((e) => opt(e, e)))
     effort.value = c.effort || ''
     effort.hidden = efforts.length === 0
@@ -193,8 +192,8 @@ async function load() {
 async function loadLists() {
   st.harnesses = (await req('harness.list')).harnesses
   drawChoosers()
-  // each harness fills in as its own CLI answers (agy and pi take seconds)
-  await Promise.all(st.harnesses.map(async (h) => { st.models[h.id] = await req('models.list', { agent: h.id }).catch(() => ({ models: [], efforts: [], takesModel: true })); drawChoosers() }))
+  // each harness fills in as its own CLI answers (agy takes seconds)
+  await Promise.all(st.harnesses.map(async (h) => { st.models[h.id] = await req('models.list', { agent: h.id }).catch(() => ({ models: [], efforts: [] })); drawChoosers() }))
 }
 
 function callout(tone, title, body, ...buttons) {

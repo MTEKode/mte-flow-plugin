@@ -3,7 +3,7 @@
   "execution": "trusted-worker",
   "id": "mte-flow",
   "name": "MTE Flow",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Start and watch MTE Flow runs on stock Orca: install MTE in a workspace, pin the worker agent, launch the planner and follow runs and workers.",
   "engines": {
     "orca": ">=1.4.248"
@@ -79,7 +79,7 @@
       {
         "key": "plannerEffort",
         "title": "Planner effort",
-        "description": "Reasoning effort for the planner (claude, codex, pi). Needs a planner model.",
+        "description": "Reasoning effort for the planner (claude, antigravity). Needs a planner model.",
         "type": "string",
         "placeholder": "agent default",
         "default": ""
@@ -102,7 +102,7 @@
       {
         "key": "workerEffort",
         "title": "Worker effort",
-        "description": "Reasoning effort for the pinned worker (claude, codex, pi); ignored for other agents.",
+        "description": "Reasoning effort for the pinned worker (claude, antigravity).",
         "type": "string",
         "placeholder": "e.g. high (optional)",
         "default": ""

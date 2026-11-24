@@ -2,17 +2,11 @@
 export const KIND_LABEL = { linear: 'Linear', pr: 'PR', issue: 'Issue' }
 
 // icons shipped in panel/icons (the frame cannot load remote images); other harnesses get a letter badge
-const HARNESS_ICONS = ['claude', 'opencode', 'codex', 'antigravity', 'pi', 'droid', 'gemini']
-export function iconFor(agent) {
-  const id = agent === 'opencode2' ? 'opencode' : agent
-  return HARNESS_ICONS.includes(id) ? `icons/${id}.png` : null
-}
+const HARNESS_ICONS = ['claude', 'antigravity']
+export const iconFor = (agent) => (HARNESS_ICONS.includes(agent) ? `icons/${agent}.png` : null)
 
 /** `[value, label]` rows of the model selector; a current model the harness did not list stays selectable. */
 export function modelRows(info, current) {
-  if (!info.takesModel) {
-    return [['', 'Agent default']]
-  }
   const rows = [['', 'Default model'], ...info.models.map((m) => [m.id, m.label ?? m.id])]
   if (current && !info.models.some((m) => m.id === current)) {
     rows.push([current, current])
@@ -20,8 +14,8 @@ export function modelRows(info, current) {
   return rows
 }
 
-// which shipped icon stands for an origin (a provider id such as `zai-coding-plan`); first match wins
-const ORIGIN_ICONS = [[/alibaba|bailian|dashscope|qwen/, 'alibaba'], [/zai|z-ai|zhipu|glm/, 'zai'], [/claude|anthropic/, 'claude'], [/opencode/, 'opencode'], [/nvidia/, 'nvidia'], [/openai|codex/, 'codex'], [/google|gemini/, 'gemini']]
+// which shipped icon stands for an origin (a provider id such as `alibaba-coder-plan`); first match wins
+const ORIGIN_ICONS = [[/alibaba|bailian|dashscope|qwen/, 'alibaba'], [/claude|anthropic/, 'claude'], [/nvidia/, 'nvidia']]
 export function originIcon(origin) {
   const hit = ORIGIN_ICONS.find(([re]) => re.test(String(origin).toLowerCase()))
   return hit ? `icons/${hit[1]}.png` : null
@@ -37,7 +31,7 @@ export function filterRows(rows, q) {
 }
 
 /**
- * Groups model rows by origin: the `provider/` prefix of a model id (opencode, pi) is the plan or account it bills.
+ * Groups model rows by origin: the `provider/` prefix of a model id is the plan or account it bills.
  * Rows without a prefix come first, ungrouped. Labels keep the full id so the closed selector still names the origin.
  */
 export function groupRows(rows) {
@@ -53,9 +47,9 @@ export function groupRows(rows) {
   return groups
 }
 
-/** Drops what the harness cannot take: a model where it runs its own, an effort it lacks or one without a model. */
+/** Drops what the harness cannot take: an effort it lacks or one without a model. */
 export function fitSelection(sel, info) {
-  const model = info.takesModel ? sel.model || '' : ''
+  const model = sel.model || ''
   return { ...sel, model, effort: model && info.efforts.includes(sel.effort) ? sel.effort : '' }
 }
 

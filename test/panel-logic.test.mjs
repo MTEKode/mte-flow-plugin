@@ -4,17 +4,16 @@ import { readFile } from 'node:fs/promises'
 import { createSearcher, filterRows, fitSelection, goalText, groupRows, iconFor, listKey, modelRows, moveIndex, originIcon } from '../panel/logic.mjs'
 
 test('model rows: default first, labels when the CLI gives them, an unlisted current model stays', () => {
-  const info = { takesModel: true, models: [{ id: 'gemini-x-high', label: 'Gemini X (High)' }, { id: 'p/m' }] }
+  const info = { models: [{ id: 'gemini-x-high', label: 'Gemini X (High)' }, { id: 'p/m' }] }
   assert.deepEqual(modelRows(info, ''), [['', 'Default model'], ['gemini-x-high', 'Gemini X (High)'], ['p/m', 'p/m']])
   assert.deepEqual(modelRows(info, 'typed/id').at(-1), ['typed/id', 'typed/id'])
-  assert.deepEqual(modelRows({ takesModel: false, models: [{ id: 'p/m' }] }, 'p/m'), [['', 'Agent default']])
 })
 
 test('model rows are grouped by origin (the provider prefix); unprefixed rows stay on top, ungrouped', () => {
-  const rows = [['', 'Default model'], ['zai-coding-plan/glm-5.3', 'zai-coding-plan/glm-5.3'], ['alibaba-coder-plan/kimi-k2.5', 'alibaba-coder-plan/kimi-k2.5'], ['zai-coding-plan/glm-5.4', 'zai-coding-plan/glm-5.4'], ['nvidia/meta/llama', 'nvidia/meta/llama']]
+  const rows = [['', 'Default model'], ['bailian-token-plan-personal/glm-5.3', 'bailian-token-plan-personal/glm-5.3'], ['alibaba-coder-plan/kimi-k2.5', 'alibaba-coder-plan/kimi-k2.5'], ['bailian-token-plan-personal/glm-5.4', 'bailian-token-plan-personal/glm-5.4'], ['nvidia/meta/llama', 'nvidia/meta/llama']]
   assert.deepEqual(groupRows(rows), [
     { origin: null, rows: [['', 'Default model']] },
-    { origin: 'zai-coding-plan', rows: [['zai-coding-plan/glm-5.3', 'zai-coding-plan/glm-5.3'], ['zai-coding-plan/glm-5.4', 'zai-coding-plan/glm-5.4']] },
+    { origin: 'bailian-token-plan-personal', rows: [['bailian-token-plan-personal/glm-5.3', 'bailian-token-plan-personal/glm-5.3'], ['bailian-token-plan-personal/glm-5.4', 'bailian-token-plan-personal/glm-5.4']] },
     { origin: 'alibaba-coder-plan', rows: [['alibaba-coder-plan/kimi-k2.5', 'alibaba-coder-plan/kimi-k2.5']] },
     { origin: 'nvidia', rows: [['nvidia/meta/llama', 'nvidia/meta/llama']] }
   ])
@@ -22,30 +21,29 @@ test('model rows are grouped by origin (the provider prefix); unprefixed rows st
 })
 
 test('model search ANDs the words over id and label; origins map to a shipped icon or none', async () => {
-  const rows = [['', 'Default model'], ['zai-coding-plan/glm-5.3', 'zai-coding-plan/glm-5.3'], ['gemini-4-neon-high', 'Gemini 4 Neon (High)'], ['alibaba-coder-plan/glm-5', 'alibaba-coder-plan/glm-5']]
-  assert.deepEqual(filterRows(rows, 'GLM zai').map((r) => r[0]), ['zai-coding-plan/glm-5.3'])
+  const rows = [['', 'Default model'], ['bailian-token-plan-personal/glm-5.3', 'bailian-token-plan-personal/glm-5.3'], ['gemini-4-neon-high', 'Gemini 4 Neon (High)'], ['alibaba-coder-plan/glm-5', 'alibaba-coder-plan/glm-5']]
+  assert.deepEqual(filterRows(rows, 'GLM bailian').map((r) => r[0]), ['bailian-token-plan-personal/glm-5.3'])
   assert.deepEqual(filterRows(rows, 'neon (high)').map((r) => r[0]), ['gemini-4-neon-high'])
   assert.equal(filterRows(rows, '  ').length, 4)
-  for (const origin of ['alibaba-coder-plan', 'bailian-token-plan-personal', 'zai-coding-plan', 'claude-code', 'opencode', 'nvidia']) {
+  for (const origin of ['alibaba-coder-plan', 'bailian-token-plan-personal', 'claude-code', 'nvidia']) {
     assert.ok((await readFile(new URL(`../panel/${originIcon(origin)}`, import.meta.url))).length > 0, origin)
   }
   assert.equal(originIcon('bailian-token-plan-personal'), 'icons/alibaba.png')
   assert.equal(originIcon('swiftlm'), null)
 })
 
-test('selection is fitted to the harness: no model where it runs its own, effort only with a model it supports', () => {
-  const claude = { takesModel: true, efforts: ['low', 'high'] }
+test('selection is fitted to the harness: effort only with a model it supports', () => {
+  const claude = { efforts: ['low', 'high'] }
   assert.deepEqual(fitSelection({ agent: 'claude', model: 'sonnet', effort: 'high' }, claude), { agent: 'claude', model: 'sonnet', effort: 'high' })
   assert.equal(fitSelection({ model: '', effort: 'high' }, claude).effort, '')
   assert.equal(fitSelection({ model: 'sonnet', effort: 'max' }, claude).effort, '')
-  assert.deepEqual(fitSelection({ model: 'p/m', effort: 'high' }, { takesModel: false, efforts: [] }), { model: '', effort: '' })
+  assert.deepEqual(fitSelection({ model: 'p/m', effort: 'high' }, { efforts: [] }), { model: 'p/m', effort: '' })
 })
 
-test('every harness icon the panel names ships in panel/icons; opencode2 reuses opencode; unknown gets none', async () => {
-  for (const id of ['claude', 'opencode', 'opencode2', 'codex', 'antigravity', 'pi', 'droid', 'gemini']) {
+test('every harness icon the panel names ships in panel/icons; unknown gets none', async () => {
+  for (const id of ['claude', 'antigravity']) {
     assert.ok((await readFile(new URL(`../panel/${iconFor(id)}`, import.meta.url))).length > 0, id)
   }
-  assert.equal(iconFor('opencode2'), 'icons/opencode.png')
   assert.equal(iconFor('someday'), null)
 })
 
