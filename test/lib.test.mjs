@@ -524,7 +524,7 @@ test('manifest defaults: claude planner, claude worker, sonnet model, no effort;
   const defaults = Object.fromEntries(manifest.contributes.settings.map((s) => [s.key, s.default]))
   assert.deepEqual([defaults.plannerAgent, defaults.workerAgent, defaults.workerModel, defaults.workerEffort], ['claude', 'claude', 'sonnet', ''])
   assert.ok(manifest.capabilities.some((c) => c.kind === 'storage:own'))
-  assert.equal(manifest.version, '0.6.1')
+  assert.equal(manifest.version, '0.7.0')
   assert.equal(manifest.contributes.panels[0].ui, 'html')
   assert.equal(defaults.plannerSurface, 'chat')
 })
