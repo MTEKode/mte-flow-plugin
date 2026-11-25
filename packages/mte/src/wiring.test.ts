@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
@@ -525,7 +525,8 @@ describe('mte install', () => {
     assert.equal(settings.hooks.PreToolUse.length, 2)
     const mcp = JSON.parse(readFileSync(join(ws, '.mcp.json'), 'utf8'))
     assert.deepEqual(Object.keys(mcp.mcpServers), ['other', 'mte-memory'])
-    assert.deepEqual(mcp.mcpServers['mte-memory'], { command: 'mte', args: ['memory', '--role', 'orchestrator'] })
+    // Runnable entry: the node that ran the install plus the real CLI file, independent of PATH.
+    assert.deepEqual(mcp.mcpServers['mte-memory'], { command: process.execPath, args: [realpathSync(CLI), 'memory'] })
     assert.deepEqual(readFileSync(join(ws, '.gitignore'), 'utf8').split('\n').slice(0, 2), ['node_modules', '.mte/memory.db*'])
   })
 

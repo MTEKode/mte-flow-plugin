@@ -36,7 +36,7 @@ export const BOOLEAN_FLAGS: Set<string> = new Set(['json', 'failed', 'detect', '
 const HELP = `mte - MTE Flow engine
 
 Usage:
-  mte memory [--role orchestrator|coder|validator] [--workspace <path>]   stdio MCP memory server
+  mte memory [--role orchestrator] [--workspace <path>]                  stdio MCP memory server (planner-only; coder/validator roles removed)
   mte check [--json]                                                      run lint/typecheck/test; exit code = failing groups
   mte deploy-check config [--json]                                        show deploy-check config (never the password)
   mte deploy-check validated --summary <text> [--failed]                  report on the linked Linear issue

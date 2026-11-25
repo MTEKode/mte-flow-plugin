@@ -46,17 +46,6 @@ AFTER UPDATE ON qa_log BEGIN
   WHERE rowid = NEW.id;
 END;
 
-CREATE TABLE IF NOT EXISTS questions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  step_id TEXT NOT NULL,
-  topic TEXT NOT NULL,
-  question TEXT NOT NULL,
-  asked_by TEXT NOT NULL,
-  asked_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-  status TEXT NOT NULL DEFAULT 'pending',
-  answered_at TEXT
-);
-
 CREATE TABLE IF NOT EXISTS notes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL,

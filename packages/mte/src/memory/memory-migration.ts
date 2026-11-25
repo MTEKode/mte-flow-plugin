@@ -6,10 +6,10 @@ import { openSqliteConnection } from './sqlite-connection.ts'
 import type { SqliteConnection } from './sqlite-connection.ts'
 
 // Columns copied per table; ids are regenerated so rows from several worktrees never collide.
+// The retired `questions` queue is not imported: a legacy DB keeps its orphan table, the repo DB never had it.
 const IMPORTED_TABLES: Record<string, string[]> = {
   decisions: ['feature', 'decision', 'rationale', 'affected_files', 'status', 'created_at'],
   qa_log: ['step_id', 'topic', 'question', 'answer', 'timestamp'],
-  questions: ['step_id', 'topic', 'question', 'asked_by', 'asked_at', 'status', 'answered_at'],
   notes: ['kind', 'topic', 'content', 'created_at']
 }
 

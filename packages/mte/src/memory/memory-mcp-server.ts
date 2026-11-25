@@ -1,17 +1,20 @@
 // Ported from spookfish:src/shared/mte/mcp/memory-mcp-server.ts @ 4c059137f8e
 import type { Readable, Writable } from 'node:stream'
 import { errorMessage } from '../error-message.ts'
+import { identityFromEnv, readPlanner, sameCaller } from '../wiring/state.ts'
 import { openWorkspaceMemoryStore } from './memory-migration.ts'
 import type { MemoryStore } from './memory-store.ts'
 import { createMemoryToolHandlers } from './memory-tools.ts'
-import type { MemoryRole, MemoryToolResult } from './memory-tools.ts'
+import type { MemoryToolResult } from './memory-tools.ts'
 
 export type MemoryMcpServerOptions = {
-  role: MemoryRole
   workspaceRoot: string
   /** serverInfo.version; callers that ship package metadata pass it, others report 0.0.0. */
   version?: string
 }
+
+/** The planner-identity gate's refusal (decision: tools/call only, never tools/list). */
+const PLANNER_ONLY = 'memory is planner-only; workers use orca orchestration ask'
 
 const SERVER_NAME = 'orca-mte-memory'
 const DEFAULT_PROTOCOL_VERSION = '2024-11-05'
@@ -31,6 +34,7 @@ type MemoryToolHandlers = ReturnType<typeof createMemoryToolHandlers>
 type ServerContext = {
   handlers: MemoryToolHandlers
   version: string
+  workspaceRoot: string
 }
 
 function resultResponse(id: JsonRpcId, result: unknown): JsonRpcResponse {
@@ -89,8 +93,23 @@ function executeToolCall(
   }
 }
 
+/**
+ * The memory server belongs to the claimed planner; anyone else is refused before any DB call.
+ * An unclaimed workspace allows (the planner's server starts before `mte planner claim`), and a
+ * broken claim file fails open like the guard. tools/list is never gated: clients cache it at
+ * session start, before the claim exists.
+ */
+function callerIsPlanner(workspaceRoot: string): boolean {
+  try {
+    const claim = readPlanner(workspaceRoot)
+    return claim === null || sameCaller(claim, identityFromEnv(process.env))
+  } catch {
+    return true
+  }
+}
+
 function toolsCallResponse(
-  handlers: MemoryToolHandlers,
+  context: ServerContext,
   id: JsonRpcId,
   params: unknown
 ): JsonRpcResponse {
@@ -98,7 +117,9 @@ function toolsCallResponse(
   if (record === null || typeof record.name !== 'string' || record.name === '') {
     return errorResponse(id, -32602, 'Invalid params')
   }
-  const toolResult = executeToolCall(handlers, record.name, record.arguments ?? {})
+  const toolResult = callerIsPlanner(context.workspaceRoot)
+    ? executeToolCall(context.handlers, record.name, record.arguments ?? {})
+    : { ok: false, error: PLANNER_ONLY }
   return resultResponse(id, {
     content: [{ type: 'text', text: JSON.stringify(toolResult) }],
     isError: !toolResult.ok
@@ -117,7 +138,7 @@ function respondToRequest(
     case 'tools/list':
       return resultResponse(id, toolsListResult(context.handlers))
     case 'tools/call':
-      return toolsCallResponse(context.handlers, id, params)
+      return toolsCallResponse(context, id, params)
     case 'ping':
       return resultResponse(id, {})
     default:
@@ -150,7 +171,7 @@ function respondToLine(line: string, context: ServerContext): JsonRpcResponse | 
   return respondToRequest(context, messageId(parsed), method, parsed.params)
 }
 
-/** Serves the role-scoped memory tools over MCP stdio until stdin ends. Resolves when the input stream closes. */
+/** Serves the planner-scoped memory tools over MCP stdio until stdin ends. Resolves when the input stream closes. */
 export async function runMemoryMcpServer(
   input: Readable,
   output: Writable,
@@ -165,8 +186,9 @@ export async function runMemoryMcpServer(
     throw error
   }
   const context: ServerContext = {
-    handlers: createMemoryToolHandlers(store, options.role),
-    version: options.version ?? FALLBACK_VERSION
+    handlers: createMemoryToolHandlers(store),
+    version: options.version ?? FALLBACK_VERSION,
+    workspaceRoot: options.workspaceRoot
   }
   return new Promise<void>((resolve) => {
     let buffer = ''
