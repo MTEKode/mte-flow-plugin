@@ -1,5 +1,5 @@
 // MTE Flow panel (html, isolated frame): all data comes from the worker through orca.plugin.request.
-import { claimCallout, createSearcher, filterRows, fitSelection, goalText, groupRows, iconFor, KIND_LABEL, listHints, listKey, modelRows, originIcon, originOf, startNote } from './logic.mjs'
+import { claimCallout, createSearcher, filterRows, fitSelection, goalText, groupRows, iconFor, KIND_LABEL, listHints, listKey, modelRows, mteDriftHint, mteRow, originIcon, originOf, startNote } from './logic.mjs'
 
 const $ = (id) => document.getElementById(id)
 const req = (name, params = {}) => orca.plugin.request(name, params, { timeoutMs: 120000 })
@@ -224,6 +224,8 @@ function render() {
   if (s?.setup.status === 'error') out.push(callout('danger', 'MTE setup failed', s.setup.message, btn('Repair setup', () => act('repair', () => req('setup.repair'), () => 'Setup finished.'))))
   if (s && !s.depthReminderDismissed) out.push(callout('', 'One manual setting', 'Set Settings → Orchestration → Nested worker depth = 1 so dispatched workers cannot start workers.', btn('Dismiss', () => act('dismiss', () => req('reminder.dismiss'), () => 'Reminder dismissed.'))))
   if (s?.mte.missing) out.push(callout('danger', s.mte.unusable ? 'mte binary not usable' : 'mte binary not found', s.mte.message ?? ''))
+  const drift = s ? mteDriftHint(s.mte) : null
+  if (drift) out.push(callout(drift.tone, drift.title, drift.body))
   const conflict = claimCallout(s, st.claimedBy)
   if (conflict) out.push(callout(conflict.tone, conflict.title, conflict.body, ...(conflict.replace ? [btn('Replace planner', () => startRun(true))] : [])))
   const hints = listHints({ harnessError: st.harnessError, models: st.models })
@@ -232,7 +234,8 @@ function render() {
   $('notices').replaceChildren(...out)
 
   $('active').textContent = `${s?.activeWorkers ?? 0} active`
-  $('ws').textContent = s?.workspace ? `Workspace: ${s.workspace.name} · ${s.workspace.path}` : 'No workspace focused.'
+  const version = s ? mteRow(s.mte) : null
+  $('ws').textContent = (s?.workspace ? `Workspace: ${s.workspace.name} · ${s.workspace.path}` : 'No workspace focused.') + (version ? ` · ${version}` : '')
   const runs = s?.orchestrators ?? []
   $('runs').replaceChildren(
     ...(runs.length

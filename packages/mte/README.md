@@ -5,7 +5,7 @@ MTE Flow engine (bin `mte`): memory MCP server, check runner, deploy-check, guar
 Install from the GitHub release tarball (not published to the npm registry):
 
 ```sh
-npm i -g https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v0.3.0/mtekode-mte-0.3.0.tgz
+npm i -g https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v0.8.0/mtekode-mte-0.8.0.tgz
 ```
 
 From a checkout: `cd packages/mte && npm run build && npm link`. See the repository README for commands.

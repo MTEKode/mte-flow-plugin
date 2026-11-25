@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
-import { claimCallout, createSearcher, filterRows, fitSelection, goalText, groupRows, iconFor, listHints, listKey, modelRows, moveIndex, originIcon, startNote } from '../panel/logic.mjs'
+import { claimCallout, createSearcher, filterRows, fitSelection, goalText, groupRows, iconFor, listHints, listKey, modelRows, moveIndex, mteDriftHint, mteRow, originIcon, startNote } from '../panel/logic.mjs'
 
 test('model rows: default first, labels when the CLI gives them, an unlisted current model stays', () => {
   const info = { models: [{ id: 'gemini-x-high', label: 'Gemini X (High)' }, { id: 'p/m' }] }
@@ -129,6 +129,19 @@ test('AC8: the fallback note names exactly the selections the host launcher drop
 test('AC9: the truncation note states the real 4000-char cap', () => {
   assert.match(startNote({ surface: 'chat', truncated: true }), /truncated to fit the 4000-char prompt cap/)
   assert.ok(!startNote({ surface: 'chat', truncated: true }).includes('4096'))
+})
+
+test('AC4: the panel row shows the installed mte version; drift below REQUIRED raises a warning hint pointing at Repair setup', () => {
+  assert.equal(mteRow({ missing: false, version: '0.8.0' }), 'mte 0.8.0')
+  assert.equal(mteRow({ missing: false, version: null }), null)
+  assert.equal(mteRow({ missing: true, message: 'gone' }), null)
+  const drift = mteDriftHint({ missing: false, version: '0.7.0', required: '0.8.0', drift: true })
+  assert.equal(drift.tone, 'warning')
+  assert.match(drift.title, /0\.7\.0 is older than 0\.8\.0/)
+  assert.match(drift.body, /Repair setup/)
+  assert.equal(mteDriftHint({ missing: false, version: '0.8.0', required: '0.8.0', drift: false }), null)
+  assert.equal(mteDriftHint({ missing: false, version: null, required: '0.8.0', drift: false }), null)
+  assert.equal(mteDriftHint({ missing: true, version: null, required: '0.8.0', drift: false }), null)
 })
 
 test('AC3: failed harness/model listings become hint lines (goal.search hint pattern)', () => {

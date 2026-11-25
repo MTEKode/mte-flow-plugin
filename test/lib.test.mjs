@@ -196,7 +196,7 @@ test('missing mte binary yields the mte_missing error with install instructions'
   for (const result of [await startRun(deps, { goal: 'x' }), await installInWorkspace(deps)]) {
     assert.equal(result.ok, false)
     assert.equal(result.error.code, 'mte_missing')
-    assert.match(result.error.message, /npm i -g https:\/\/github\.com\/MTEKode\/mte-flow-plugin\/releases\/download\/mte-v0\.3\.0\/mtekode-mte-0\.3\.0\.tgz/)
+    assert.ok(result.error.message.includes(`npm i -g ${tarballUrl(REQUIRED_MTE_VERSION)}`), result.error.message)
     assert.doesNotMatch(result.error.message, /@mtekode\/mte/)
   }
   assert.ok(!calls.some((c) => c.args?.[0] === 'agent' || c.method === 'agent.launch'))
@@ -424,7 +424,14 @@ test('checkMte: a non-zero --version exit is unusable, with the stderr first lin
   assert.equal(res.unusable, true)
   assert.match(res.message, /ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING/)
   assert.doesNotMatch(res.message, /more/)
-  assert.deepEqual(await checkMte({ exec: async () => ({ code: 0, stdout: '0.3.0', stderr: '' }) }, { mteBin: 'mte' }), { missing: false })
+  assert.deepEqual(await checkMte({ exec: async () => ({ code: 0, stdout: `${REQUIRED_MTE_VERSION}\n`, stderr: '' }) }, { mteBin: 'mte' }), { missing: false, version: REQUIRED_MTE_VERSION, required: REQUIRED_MTE_VERSION, drift: false })
+})
+
+test('AC3: checkMte reports the detected version and drift below REQUIRED', async () => {
+  const newer = await checkMte({ exec: async () => ({ code: 0, stdout: '0.9.1\n', stderr: '' }) }, { mteBin: 'mte' })
+  assert.deepEqual(newer, { missing: false, version: '0.9.1', required: REQUIRED_MTE_VERSION, drift: false })
+  const older = await checkMte({ exec: async () => ({ code: 0, stdout: 'mte 0.7.0', stderr: '' }) }, { mteBin: 'mte' })
+  assert.deepEqual([older.version, older.drift], ['0.7.0', true])
 })
 
 test('AC4: a checkMte failure that is not ENOENT is reported, never silently healthy', async () => {
@@ -477,7 +484,7 @@ test('AC6: a settings change re-seeds the choices; unchanged settings keep store
 
 // ---- first-run setup ----
 
-const TARBALL = 'https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v0.3.0/mtekode-mte-0.3.0.tgz'
+const TARBALL = tarballUrl(REQUIRED_MTE_VERSION)
 
 /** In-memory plugin storage plus an exec stub driven by `env` ({ mte, node, npm, npmInstall }); records every call. */
 function setupStubs({ mte = null, node = 'v24.14.0', npm = '10.9.0', npmInstall = { code: 0 }, userInstall = { code: 0 }, storage = new Map() } = {}) {
@@ -515,19 +522,34 @@ function setupStubs({ mte = null, node = 'v24.14.0', npm = '10.9.0', npmInstall 
 }
 const npmInstalls = (calls) => calls.filter((c) => c.file === 'npm' && c.args?.[0] === 'i')
 
-test('REQUIRED_MTE_VERSION and tarball URL', () => {
-  assert.equal(REQUIRED_MTE_VERSION, '0.3.0')
-  assert.equal(tarballUrl('0.3.0'), TARBALL)
-  assert.ok(compareVersions('0.2.0', '0.3.0') < 0 && compareVersions('0.3.0', '0.3.0') === 0 && compareVersions('0.10.0', '0.3.0') > 0)
+test('version sites stay aligned: REQUIRED === CLI package.json === plugin manifest, and every install URL derives from it', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const cliPkg = JSON.parse(await readFile(new URL('../packages/mte/package.json', import.meta.url), 'utf8'))
+  const manifestText = await readFile(new URL('../orca-plugin.json', import.meta.url), 'utf8')
+  const readmeText = await readFile(new URL('../README.md', import.meta.url), 'utf8')
+  const libText = await readFile(new URL('../worker/lib.mjs', import.meta.url), 'utf8')
+  assert.equal(REQUIRED_MTE_VERSION, cliPkg.version, 'packages/mte/package.json must match REQUIRED_MTE_VERSION')
+  assert.equal(REQUIRED_MTE_VERSION, JSON.parse(manifestText).version, 'orca-plugin.json must match REQUIRED_MTE_VERSION')
+  const mteBin = JSON.parse(manifestText).contributes.settings.find((s) => s.key === 'mteBin')
+  assert.ok(mteBin.description.includes(TARBALL), 'manifest mteBin description must carry the REQUIRED tarball URL')
+  assert.ok(readmeText.includes(TARBALL), 'README install commands must carry the REQUIRED tarball URL')
+  // no stale tarball URL may survive anywhere the person reads it
+  for (const [name, text] of [['orca-plugin.json', manifestText], ['README.md', readmeText], ['worker/lib.mjs', libText]]) {
+    for (const m of text.matchAll(/releases\/download\/mte-v([\d.]+)\/mtekode-mte-([\d.]+)\.tgz/g)) {
+      assert.deepEqual([m[1], m[2]], [REQUIRED_MTE_VERSION, REQUIRED_MTE_VERSION], `${name} references tarball ${m[1]}, expected ${REQUIRED_MTE_VERSION}`)
+    }
+  }
+  assert.equal(tarballUrl('1.2.3'), 'https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v1.2.3/mtekode-mte-1.2.3.tgz')
+  assert.ok(compareVersions('0.2.0', REQUIRED_MTE_VERSION) < 0 && compareVersions(REQUIRED_MTE_VERSION, REQUIRED_MTE_VERSION) === 0 && compareVersions('0.10.0', '0.9.0') > 0)
 })
 
 test('setup: mte missing -> npm i -g <exact tarball>, then mte install --user, then remembered', async () => {
   const { deps, calls, storage } = setupStubs({ mte: null })
   const res = await ensureSetup(deps, { force: true })
-  assert.deepEqual([res.ok, res.installed], [true, true])
+  assert.deepEqual([res.ok, res.installed, res.version], [true, true, REQUIRED_MTE_VERSION])
   assert.deepEqual(npmInstalls(calls).map((c) => c.args), [['i', '-g', TARBALL]])
   assert.deepEqual(calls.filter((c) => c.args?.[0] === 'install').map((c) => c.args), [['install', '--user']])
-  assert.ok(storage.has('setup:0.3.0'))
+  assert.ok(storage.has(`setup:${REQUIRED_MTE_VERSION}`))
   assert.ok(calls.some((c) => c.progress))
 })
 
@@ -536,9 +558,9 @@ test('setup: older mte -> same install; current mte -> no npm install but still 
   assert.equal((await ensureSetup(old.deps, { force: true })).installed, true)
   assert.deepEqual(npmInstalls(old.calls).map((c) => c.args), [['i', '-g', TARBALL]])
 
-  const current = setupStubs({ mte: '0.3.0' })
+  const current = setupStubs({ mte: REQUIRED_MTE_VERSION })
   const res = await ensureSetup(current.deps)
-  assert.deepEqual([res.ok, res.installed], [true, false])
+  assert.deepEqual([res.ok, res.installed, res.version], [true, false, REQUIRED_MTE_VERSION])
   assert.equal(npmInstalls(current.calls).length, 0)
   assert.ok(current.calls.some((c) => c.args?.join(' ') === 'install --user'))
 })
@@ -571,14 +593,23 @@ test('setup runs once per mte version; force (Repair setup) runs it again', asyn
   assert.equal((await ensureSetup(deps, { force: true })).ok, true)
   const after = calls.length
   const again = await ensureSetup(deps)
-  assert.deepEqual([again.ok, again.skipped], [true, true])
-  assert.equal(calls.length, after, 'no exec on the second activation')
+  assert.deepEqual([again.ok, again.skipped, again.version], [true, true, REQUIRED_MTE_VERSION])
+  // the skipped activation only probes the CLI version: it installs nothing
+  assert.deepEqual(calls.slice(after).filter((c) => c.file === 'npm' || c.args?.[0] === 'install'), [])
+  assert.equal(calls.slice(after).length, 1, 'only the version probe runs')
   const forced = await ensureSetup(deps, { force: true })
   assert.equal(forced.skipped, undefined)
   assert.ok(calls.length > after)
   // a different stored version does not count
-  const other = setupStubs({ mte: '0.3.0', storage: new Map([['setup:0.2.0', { at: 'x' }]]) })
+  const other = setupStubs({ mte: REQUIRED_MTE_VERSION, storage: new Map([['setup:0.2.0', { at: 'x' }]]) })
   assert.equal((await ensureSetup(other.deps)).skipped, undefined)
+})
+
+test('AC3: a skipped setup reports the detected version (newer manual installs included)', async () => {
+  const { deps, calls } = setupStubs({ mte: '0.9.0', storage: new Map([[`setup:${REQUIRED_MTE_VERSION}`, { at: 'x' }]]) })
+  const res = await ensureSetup(deps)
+  assert.deepEqual([res.ok, res.skipped, res.version], [true, true, '0.9.0'])
+  assert.equal(calls.length, 1, 'read-only --version probe only')
 })
 
 test('AC7: activation never runs npm unattended: needs-consent, a dismissal stays silent, force (Run/Repair setup) installs', async () => {
@@ -612,7 +643,6 @@ test('manifest defaults: claude planner, claude worker, sonnet model, no effort;
   const defaults = Object.fromEntries(manifest.contributes.settings.map((s) => [s.key, s.default]))
   assert.deepEqual([defaults.plannerAgent, defaults.workerAgent, defaults.workerModel, defaults.workerEffort], ['claude', 'claude', 'sonnet', ''])
   assert.ok(manifest.capabilities.some((c) => c.kind === 'storage:own'))
-  assert.equal(manifest.version, '0.7.0')
   assert.equal(manifest.contributes.panels[0].ui, 'html')
   assert.equal(defaults.plannerSurface, 'chat')
 })

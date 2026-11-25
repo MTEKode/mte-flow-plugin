@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 export const PROMPT_MAX = 4000
 export const TRUNCATION_MARKER = '\n[goal truncated]'
 /** The mte CLI version this plugin release is built for; the setup installs it when `mte` is missing or older. */
-export const REQUIRED_MTE_VERSION = '0.3.0'
+export const REQUIRED_MTE_VERSION = '0.8.0'
 export const MIN_NODE_MAJOR = 24
 export const tarballUrl = (version) =>
   `https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v${version}/mtekode-mte-${version}.tgz`
@@ -430,7 +430,7 @@ async function launchPlanner(deps, ws, settings, prompt) {
   return { terminalId, surface: 'terminal', fallback: settings.plannerSurface !== 'terminal', dropped }
 }
 
-/** `mte` usable? ENOENT means missing; a non-zero `--version` exit (e.g. a global npm install that Node cannot type-strip) means unusable. */
+/** `mte` usable? ENOENT means missing; a non-zero `--version` exit (e.g. a global npm install that Node cannot type-strip) means unusable. On success it reports the detected version and whether it drifts below REQUIRED_MTE_VERSION (possible with manual installs; the panel hints). */
 export async function checkMte(deps, settings) {
   try {
     const res = await deps.exec(settings.mteBin, ['--version'], { timeoutMs: 15_000 })
@@ -442,7 +442,8 @@ export async function checkMte(deps, settings) {
         message: `\`${settings.mteBin} --version\` failed: ${line}. Install it: ${INSTALL_HINT}.`
       }
     }
-    return { missing: false }
+    const version = parseVersion(res.stdout)?.join('.') ?? null
+    return { missing: false, version, required: REQUIRED_MTE_VERSION, drift: version ? compareVersions(version, REQUIRED_MTE_VERSION) < 0 : false }
   } catch (error) {
     if (error && error.code === 'ENOENT') {
       return { missing: true, message: mteMissingError(settings.mteBin).message }
@@ -685,14 +686,17 @@ const firstLine = (res) => ((res.stderr || res.stdout || '').trim().split('\n')[
  * First-run setup: make sure `mte` >= REQUIRED_MTE_VERSION exists (installing the release tarball with the user's
  * own npm, never sudo), then `mte install --user` for the user-level skill. Remembered per mte version in plugin
  * storage; `force` (the Repair setup button) ignores that memory. `deps.progress(text)` reports each step.
+ * Ok results carry the DETECTED version (what `mte --version` answers), not the required one.
  */
 export async function ensureSetup(deps, { force = false } = {}) {
   const required = REQUIRED_MTE_VERSION
   const progress = (text) => deps.progress?.(text)
-  if (!force && (await deps.storage.get(setupKey(required)))) {
-    return { ok: true, skipped: true, version: required }
-  }
   const settings = await readSettings(deps.host)
+  if (!force && (await deps.storage.get(setupKey(required)))) {
+    // cheap read-only probe: report what is actually installed (it may be newer than required)
+    const detected = parseVersion((await tryExec(deps, settings.mteBin, ['--version'], { timeoutMs: 15_000 })).stdout)?.join('.') ?? null
+    return { ok: true, skipped: true, version: detected ?? required }
+  }
   progress('Checking the mte CLI…')
   let current = await tryExec(deps, settings.mteBin, ['--version'], { timeoutMs: 15_000 })
   let installed = false
@@ -700,10 +704,11 @@ export async function ensureSetup(deps, { force = false } = {}) {
     // `npm i -g` changes the machine globally: never unattended. Activation reports needs-consent instead;
     // Run setup and Repair setup call this with force, which is the consent itself. "Not now" (dismiss) stays until then.
     if (!force) {
+      const detected = parseVersion(current.stdout)?.join('.') ?? null
       if ((await deps.storage.get(CONSENT_KEY))?.version === required) {
-        return { ok: true, declined: true, version: required }
+        return { ok: true, declined: true, version: detected ?? required }
       }
-      return { ok: true, needsConsent: true, version: required, message: `mte ${required} is missing or too old. Installing it runs \`npm i -g\` (a global change) — press Run setup to allow it, or install it yourself: ${INSTALL_HINT}.` }
+      return { ok: true, needsConsent: true, version: detected ?? required, message: `mte ${required} is missing or too old. Installing it runs \`npm i -g\` (a global change) — press Run setup to allow it, or install it yourself: ${INSTALL_HINT}.` }
     }
     const node = await tryExec(deps, 'node', ['--version'], { timeoutMs: 15_000 })
     const major = parseVersion(node.stdout)?.[0]
@@ -735,7 +740,7 @@ export async function ensureSetup(deps, { force = false } = {}) {
     return fail('setup', 'user_install_failed', `\`mte install --user\` failed${firstLine(skill) ? `: ${firstLine(skill)}` : ''}.`)
   }
   await deps.storage.set(setupKey(required), { at: new Date().toISOString() })
-  return { ok: true, version: required, installed }
+  return { ok: true, version: parseVersion(current.stdout)?.join('.') ?? required, installed }
 }
 
 export const isDepthReminderDismissed = async (storage) => Boolean(await storage.get(DEPTH_REMINDER_KEY))

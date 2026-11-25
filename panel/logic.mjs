@@ -115,6 +115,19 @@ export function claimCallout(snap, heldBy = null) {
   return null
 }
 
+/** mte row for the panel: the detected CLI version (null when unknown); `worker/lib.mjs checkMte` supplies the fields. */
+export function mteRow({ missing, version }) {
+  return missing || !version ? null : `mte ${version}`
+}
+
+/** Drift hint callout: the installed mte is below what this plugin pins (possible with manual installs); warning tone, points at Repair setup. */
+export function mteDriftHint({ missing, version, required, drift }) {
+  if (missing || !version || !drift) {
+    return null
+  }
+  return { tone: 'warning', title: `mte ${version} is older than ${required}`, body: 'This plugin is built for mte ' + required + '. Press Repair setup to install it (or run the npm command in the mte-binary setting).' }
+}
+
 /** Hint lines for failed harness/model listings (the goal.search hint pattern: muted text, never a silent empty list). */
 export function listHints({ harnessError, models }) {
   const hints = []
