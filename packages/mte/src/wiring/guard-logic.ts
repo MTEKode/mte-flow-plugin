@@ -62,8 +62,10 @@ export function evaluateCommand(command: string, who: Identity, ws: string, opts
       return planner
     }
     if (inv.kind === 'worker-start') {
+      // the coder pin names the corrected command; a worker-start carrying the qa pin passes too
       const pin = readPin(ws)
-      const verdict = pin === null ? ALLOW : checkPin(inv, pin)
+      const qa = readPin(ws, 'qa')
+      const verdict = pin === null ? ALLOW : qa !== null && checkPin(inv, qa).allow ? ALLOW : checkPin(inv, pin)
       if (!verdict.allow) {
         return verdict
       }

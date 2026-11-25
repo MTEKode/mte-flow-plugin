@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
-import { claimCallout, createSearcher, createWorkspaceArgs, filterRows, fitSelection, goalSlug, goalText, groupRows, iconFor, linksFromItems, listHints, listKey, modelRows, moveIndex, mteDriftHint, mteRow, originIcon, parseRef, startNote } from '../panel/logic.mjs'
+import { claimCallout, createSearcher, createWorkspaceArgs, filterRows, fitSelection, goalSlug, groupRows, iconFor, addLink, listHints, listKey, modelRows, moveIndex, mteDriftHint, mteRow, originIcon, parseRef, startNote } from '../panel/logic.mjs'
 
 test('model rows: default first, labels when the CLI gives them, an unlisted current model stays', () => {
   const info = { models: [{ id: 'gemini-x-high', label: 'Gemini X (High)' }, { id: 'p/m' }] }
@@ -58,10 +58,6 @@ test('AC3: keyboard navigation wraps and Enter/Esc map to select/close', () => {
   assert.deepEqual(listKey(1, 3, 'ArrowDown'), { index: 2, action: null })
 })
 
-test('AC3: selecting a suggestion fills "<id> <title>" plus the URL', () => {
-  assert.equal(goalText({ id: 'ENG-1', title: 'Do it', url: 'https://x/1' }), 'ENG-1 Do it\nhttps://x/1')
-})
-
 test('AC3: searcher debounces ~300ms and drops stale results', async () => {
   const timers = []
   const fake = { setTimeout: (fn, ms) => (timers.push({ fn, ms }), timers.length), clearTimeout: (id) => { if (id) timers[id - 1].fn = null } }
@@ -97,11 +93,10 @@ test('AC1: the panel keeps no poller of its own — the worker posts state.chang
   assert.ok(!text.includes('setInterval'), 'panel.js must not poll; the worker notifies it')
 })
 
-test('AC10: the goal combobox announces the highlighted option; model options get ids too', async () => {
+test('AC10: the links combobox announces the highlighted option; model options get ids too', async () => {
   const text = await readFile(new URL('../panel/panel.js', import.meta.url), 'utf8')
-  assert.match(text, /goal\.setAttribute\('aria-activedescendant', items\.length \? `go-\$\{gi\}` : ''\)/)
+  assert.match(text, /links\.setAttribute\('aria-activedescendant', linkItems\[li\] \? `lk-\$\{li\}` : ''\)/)
   assert.match(text, /input\.setAttribute\('aria-activedescendant'/)
-  assert.match(text, /id: `go-\$\{i\}`/)
   assert.match(text, /id: `mo-\$\{pid\}-\$\{i\}`/)
 })
 
@@ -154,16 +149,34 @@ test('AC3: failed harness/model listings become hint lines (goal.search hint pat
 
 // ---- panel v3: Advanced fold + Links field ----
 
-test('AC1: the selector fields live in a closed Advanced fold the choosers still mount into', async () => {
+test('the panel takes Orca\'s fonts and radius', async () => {
+  const html = await readFile(new URL('../panel/index.html', import.meta.url), 'utf8')
+  assert.match(html, /body \{[^}]*font: 13px\/1\.4 var\(--orca-font-sans/)
+  assert.match(html, /code \{ font-family: var\(--orca-font-mono/)
+  assert.ok(!html.includes('border-radius: 6px'), 'control radii come from --orca-radius')
+})
+
+test('the goal is a plain textarea: no search, no programmatic writes (Cmd/Ctrl+Z keeps working)', async () => {
+  const html = await readFile(new URL('../panel/index.html', import.meta.url), 'utf8')
+  assert.match(html, /<textarea id="goal" placeholder="[^"]*"><\/textarea>/)
+  assert.ok(!html.includes('goal-list'))
+  const js = await readFile(new URL('../panel/panel.js', import.meta.url), 'utf8')
+  assert.ok(!/goal\.value\s*=[^=]/.test(js), 'goal.value is never assigned')
+  assert.ok(!/links\.value = ''\s*\n/.test(js.replace("if (!document.execCommand('delete')) links.value = ''", '')), 'links clears through execCommand')
+})
+
+test('AC1: the orchestrator sits outside the closed Advanced fold, which holds the coder and QA choosers', async () => {
   const html = await readFile(new URL('../panel/index.html', import.meta.url), 'utf8')
   const tag = /<details id="advanced"([^>]*)>/.exec(html)
   assert.ok(tag, 'index.html must have <details id="advanced">')
   assert.ok(!/\bopen\b/.test(tag[1]), 'the fold must start closed')
   const fold = html.slice(tag.index, html.indexOf('</details>', tag.index))
-  assert.ok(fold.includes('<summary>Advanced</summary>'))
-  assert.ok(fold.includes('id="f-planner"') && fold.includes('id="f-worker"'))
+  assert.ok(fold.includes('<summary>Advanced: workers'))
+  assert.ok(!fold.includes('id="f-planner"') && html.includes('id="f-planner"'))
+  assert.ok(fold.includes('id="f-worker"') && fold.includes('id="f-qa"'))
   const js = await readFile(new URL('../panel/panel.js', import.meta.url), 'utf8')
-  assert.match(js, /chooser\(\$\('f-planner'\)[\s\S]*?\$\('f-worker'\)/)
+  assert.match(js, /chooser\(\$\('f-planner'\)[\s\S]*?\$\('f-worker'\)[\s\S]*?\$\('f-qa'\), 'qa'/)
+  assert.match(js, /qaAgent: st\.qa\.agent, qaModel: st\.qa\.model \|\| '', qaEffort: st\.qa\.effort \|\| ''/)
 })
 
 test('AC2: the links parser maps exact refs; free text stays search material', () => {
@@ -178,31 +191,25 @@ test('AC2: the links parser maps exact refs; free text stays search material', (
   assert.equal(parseRef('https:// not a url'), null)
 })
 
-test('AC4: worktree linkedItems become chips carrying the remove data', () => {
-  assert.deepEqual(linksFromItems([
-    { provider: 'github', type: 'issue', number: 45, url: 'u45' },
-    { provider: 'github', type: 'pr', number: 7 },
-    { provider: 'linear', type: 'issue', number: 0, linearIdentifier: 'ENG-123', url: 'lu' },
-    { provider: 'gitlab', type: 'mr', number: 3, url: 'https://gitlab.com/a/b/-/merge_requests/3' }
-  ]), [
-    { kind: 'issue', value: '45', url: 'u45', label: '#45' },
-    { kind: 'pr', value: '7', url: '', label: 'PR #7' },
-    { kind: 'linear', value: 'ENG-123', url: 'lu', label: 'ENG-123' },
-    { kind: 'reference', value: 'https://gitlab.com/a/b/-/merge_requests/3', url: 'https://gitlab.com/a/b/-/merge_requests/3', label: 'MR gitlab.com/a/b/-/merge_requests/3' }
-  ])
-  assert.deepEqual(linksFromItems(undefined), [])
+test('run links: chips hold only what was added; duplicates collapse, free text is refused', () => {
+  const one = addLink([], ' #45 ')
+  assert.deepEqual(one, [{ ref: '#45', kind: 'issue', value: '45', label: '#45' }])
+  assert.equal(addLink(one, '#45'), one)
+  assert.equal(addLink(one, 'fix login'), null)
+  const two = addLink(one, 'https://linear.app/acme/issue/ABC-9', 'ABC-9')
+  assert.deepEqual(two[1], { ref: 'https://linear.app/acme/issue/ABC-9', kind: 'linear', value: 'https://linear.app/acme/issue/ABC-9', label: 'ABC-9' })
+  assert.equal(addLink(two, 'https://github.com/a/b/pull/7').at(-1).label, 'PR #7')
+  assert.equal(addLink([], 'https://www.example.com/x')[0].label, 'example.com/x')
 })
 
-test('AC3: the panel and worker wire link.add/link.remove, errors surfacing as the field hint', async () => {
-  const html = await readFile(new URL('../panel/index.html', import.meta.url), 'utf8')
-  assert.ok(html.includes('placeholder="Add by identifier or URL: ENG-123, #45, https://…"'))
+test('run links: the panel keeps them local (× removes at once) and sends them with run.start; no link.add/link.remove', async () => {
   const js = await readFile(new URL('../panel/panel.js', import.meta.url), 'utf8')
-  assert.match(js, /req\('link.add'/)
-  assert.match(js, /req\('link.remove'/)
-  assert.match(js, /setLinkHint\(r\.error/)
+  assert.match(js, /links: st\.links\.map\(\(l\) => l\.ref\)/)
+  assert.match(js, /function unlink\(link\) \{\n  st\.links = st\.links\.filter/)
+  assert.ok(!js.includes("req('link."))
+  assert.match(js, /li = -1/, 'no suggestion is highlighted until the person moves to one')
   const main = await readFile(new URL('../worker/main.mjs', import.meta.url), 'utf8')
-  assert.match(main, /panels\.handle\('link.add'/)
-  assert.match(main, /panels\.handle\('link.remove'/)
+  assert.ok(!main.includes("'link.add'") && !main.includes('readLinks'))
 })
 
 // ---- panel v4: new-workspace start ----
@@ -251,12 +258,4 @@ test('AC5: the new-workspace inputs exist hidden; the panel reveals them only wh
   const js = await readFile(new URL('../panel/panel.js', import.meta.url), 'utf8')
   assert.match(js, /\$\('new-ws'\)\.onchange[^\n]*\n[^\n]*ws-fields'\)\.hidden = !/)
   assert.match(js, /newWorkspace: \$\('new-ws'\)\.checked/)
-})
-
-test('AC4: a failed links read is never silent: the worker stores linksError and the panel renders it as the hint', async () => {
-  const main = await readFile(new URL('../worker/main.mjs', import.meta.url), 'utf8')
-  assert.match(main, /catch \(error\) \{[\s\S]*?links = \[\][\s\S]*?linksError/)
-  assert.ok(!main.includes('.catch(() => [])'), 'snapshot must not swallow the readLinks failure')
-  const js = await readFile(new URL('../panel/panel.js', import.meta.url), 'utf8')
-  assert.match(js, /linksError.*setLinkHint/s)
 })

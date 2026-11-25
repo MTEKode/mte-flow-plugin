@@ -409,6 +409,24 @@ describe('pin, planner and dispatch cli', () => {
     assert.equal(mte(ws, ['dispatch', '--task', 'T-1'], { ...orca, ORCA_AGENT_SESSION_ID: 'w' }).status, 2)
     assert.equal(mte(ws, ['dispatch', '--task', 'T-1'], { ...orca, FAKE_ORCA_EXIT: '7' }).status, 7)
   })
+
+  it('qa pin: dispatch --role qa applies it (coder pin as fallback), the guard accepts either pin', () => {
+    const ws = repo()
+    const orca = { ORCA_CLI_COMMAND: join(bin, 'fake-orca'), ORCA_AGENT_SESSION_ID: 'p' }
+    mte(ws, ['pin', 'set', '--agent', 'claude', '--model', 'sonnet'])
+    mte(ws, ['planner', 'claim', '--session-id', 'p'])
+    assert.equal(mte(ws, ['dispatch', '--task', 'T-1', '--role', 'qa'], orca).stdout.trim(), 'ORCA orchestration worker-start --task T-1 --agent claude --model sonnet')
+    mte(ws, ['pin', 'set', '--role', 'qa', '--agent', 'claude', '--model', 'haiku', '--effort', 'low'])
+    assert.deepEqual(JSON.parse(mte(ws, ['pin', 'get', '--json', '--role', 'qa']).stdout), { agent: 'claude', model: 'haiku', effort: 'low' })
+    assert.deepEqual(JSON.parse(mte(ws, ['pin', 'get', '--json']).stdout), { agent: 'claude', model: 'sonnet' })
+    assert.equal(mte(ws, ['dispatch', '--task', 'T-1', '--role', 'qa'], orca).stdout.trim(), 'ORCA orchestration worker-start --task T-1 --agent claude --model haiku --effort low')
+    assert.equal(mte(ws, ['dispatch', '--task', 'T-1'], orca).stdout.trim(), 'ORCA orchestration worker-start --task T-1 --agent claude --model sonnet')
+    assert.equal(mte(ws, ['dispatch', '--task', 'T-1', '--role', 'boss'], orca).status, 1)
+    const guard = (cmd) => mte(ws, ['guard', '--command', cmd, '--session-id', 'p']).status
+    assert.equal(guard('orca orchestration worker-start --task T-1 --agent claude --model haiku --effort low'), 0)
+    assert.equal(guard('orca orchestration worker-start --task T-1 --agent claude --model sonnet'), 0)
+    assert.equal(guard('orca orchestration worker-start --task T-1 --agent claude --model opus'), 2)
+  })
 })
 
 describe('dispatch concurrency limit', () => {
@@ -631,6 +649,14 @@ describe('skill assets', () => {
     assert.match(playbook, /mte dispatch/)
     assert.match(playbook, /Tras fusionar cada tarea\*\* llama `record_task`/)
     assert.match(playbook, /Revisión autónoma[\s\S]*search_tasks/)
+    // the 8 run phases, in order
+    const phases = ['1. **Exploración.**', '2. **Brainstorming.**', '3. **Grill me.**', '4. **Write spec.**', '5. **Coder.**', '6. **QA.**', '7. **Resumen.**', '8. **PR en draft.**']
+    const at = phases.map((p) => playbook.indexOf(p))
+    assert.ok(at.every((i, n) => i > 0 && (n === 0 || i > at[n - 1])), JSON.stringify(at))
+    assert.match(playbook, /3 workers Explorador[\s\S]*sin conexión entre ellos/)
+    assert.match(playbook, /Al llegar a 10 preguntas, para y pregunta si quiere relanzar la exploración/)
+    assert.match(playbook, /despacha 2 workers con `--role qa`/)
+    assert.ok(playbook.includes('# MTE Explorador'))
     for (const text of [skill, playbook]) {
       assert.match(text, /~\/\.mte\/bin\/mte\.mjs/)
       assert.match(text, /planner already claimed/)

@@ -5,13 +5,13 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createWorkspaceArgs, goalSlug, linksFromItems, parseRef } from '../panel/logic.mjs'
+import { createWorkspaceArgs, goalSlug, parseRef } from '../panel/logic.mjs'
 
 // agent.launch and workspace.create cap prompts at 4096 chars; stay well under it.
 export const PROMPT_MAX = 4000
 export const TRUNCATION_MARKER = '\n[goal truncated]'
 /** The mte CLI version this plugin release is built for; the setup installs it when `mte` is missing or older. */
-export const REQUIRED_MTE_VERSION = '0.8.2'
+export const REQUIRED_MTE_VERSION = '0.8.3'
 export const MIN_NODE_MAJOR = 24
 export const tarballUrl = (version) =>
   `https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v${version}/mtekode-mte-${version}.tgz`
@@ -39,7 +39,8 @@ const describeChoice = (agent, model, effort) => [agent, model || 'default model
 export function setupNote(settings) {
   const planner = describeChoice(settings.plannerAgent, settings.plannerModel, settings.plannerModel && effortsFor(settings.plannerAgent).length ? settings.plannerEffort : '')
   const worker = describeChoice(settings.workerAgent, settings.workerModel, settings.workerModel && effortsFor(settings.workerAgent).length ? settings.workerEffort : '')
-  return `(Run setup from the MTE Flow panel. Orchestrator: ${planner}. Workers: ${worker}. State both in your first reply.)`
+  const qa = describeChoice(settings.qaAgent, settings.qaModel, settings.qaModel && effortsFor(settings.qaAgent).length ? settings.qaEffort : '')
+  return `(Run setup from the MTE Flow panel. Orchestrator: ${planner}. Coder workers: ${worker}. QA and validator workers: ${qa}. State all three in your first reply.)`
 }
 
 export class MteError extends Error {
@@ -174,6 +175,9 @@ export async function readSettings(host) {
     workerAgent: str(raw.workerAgent, 'claude'),
     workerModel: str(raw.workerModel),
     workerEffort: str(raw.workerEffort),
+    qaAgent: str(raw.qaAgent, 'claude'),
+    qaModel: str(raw.qaModel),
+    qaEffort: str(raw.qaEffort),
     mteBin: str(raw.mteBin, 'mte')
   }
 }
@@ -229,16 +233,62 @@ export function installArgs() {
   return ['install']
 }
 
-export function pinArgs(settings) {
-  if (!settings.workerModel) {
+/** `mte pin set` argv for one worker role (`coder` reads the worker* settings, `qa` the qa* ones); null without a model. */
+export function pinArgs(settings, role = 'coder') {
+  const k = role === 'qa' ? 'qa' : 'worker'
+  if (!settings[`${k}Model`]) {
     return null
   }
-  const args = ['pin', 'set', '--agent', settings.workerAgent, '--model', settings.workerModel]
+  const args = ['pin', 'set', '--agent', settings[`${k}Agent`], '--model', settings[`${k}Model`], ...(role === 'qa' ? ['--role', 'qa'] : [])]
   // only the EFFORTS harnesses take an effort: drop it for the rest
-  if (effortsFor(settings.workerAgent).length && settings.workerEffort) {
-    args.push('--effort', settings.workerEffort)
+  if (effortsFor(settings[`${k}Agent`]).length && settings[`${k}Effort`]) {
+    args.push('--effort', settings[`${k}Effort`])
   }
   return args
+}
+
+/** Pins the coder and the qa worker in `cwd`: the first error result, or { pinned } (whether any pin was set). */
+async function applyPins(deps, settings, cwd) {
+  let pinned = false
+  for (const role of ['coder', 'qa']) {
+    const pin = pinArgs(settings, role)
+    if (pin) {
+      const err = await runMte(deps, settings, 'pin', pin, cwd)
+      if (err) {
+        return { err }
+      }
+      pinned = true
+    }
+  }
+  return { pinned }
+}
+
+const CHOICE_SETTINGS = ['plannerAgent', 'plannerModel', 'plannerSurface', 'plannerEffort', 'workerAgent', 'workerModel', 'workerEffort', 'qaAgent', 'qaModel', 'qaEffort']
+
+/** The run's links: each ref parsed (trust boundary: the panel's text is re-parsed here), or an error naming the bad one. */
+export function parseLinks(refs) {
+  const parsed = []
+  for (const ref of Array.isArray(refs) ? refs : []) {
+    const link = parseRef(ref)
+    if (!link) {
+      return { error: `“${String(ref).slice(0, 60)}” is not an identifier or URL.` }
+    }
+    parsed.push(link)
+  }
+  return { links: parsed }
+}
+
+/** Attaches the run's links to `ws`; failures come back as text, never stop the run. */
+async function attachLinks(deps, ws, links) {
+  const failures = []
+  for (const link of links) {
+    try {
+      await orcaJson(deps, linkAddArgs(ws, link))
+    } catch (error) {
+      failures.push(`${link.value} (${String(error?.message ?? error)})`)
+    }
+  }
+  return failures
 }
 
 /** Install MTE in the focused workspace. */
@@ -311,7 +361,7 @@ export async function startRun(deps, input = {}) {
   const { goal, replace = false, newWorkspace = false } = input
   const settings = await readSettings(deps.host)
   // the panel's selection beats the settings (which only seed it)
-  for (const key of ['plannerAgent', 'plannerModel', 'plannerSurface', 'plannerEffort', 'workerAgent', 'workerModel', 'workerEffort']) {
+  for (const key of CHOICE_SETTINGS) {
     if (typeof input[key] === 'string') {
       settings[key] = input[key].trim()
     }
@@ -322,6 +372,10 @@ export async function startRun(deps, input = {}) {
   if (!String(goal ?? '').trim()) {
     return fail('input', 'empty_goal', 'Write a goal first.')
   }
+  const { links, error: linkError } = parseLinks(input.links)
+  if (linkError) {
+    return fail('input', 'bad_link', linkError)
+  }
   const ws = await resolveWorkspace(deps.host)
   if (!ws) {
     return fail('workspace', 'no_workspace', 'No workspace is focused.')
@@ -331,7 +385,7 @@ export async function startRun(deps, input = {}) {
     return refused
   }
   if (newWorkspace) {
-    return startRunInNewWorkspace(deps, settings, ws, input)
+    return startRunInNewWorkspace(deps, settings, ws, input, links)
   }
   // a live planner may be mid-run in this workspace: never drop its claim (or change its worker pin) unasked
   const existing = await readClaim(deps, settings, ws.path)
@@ -355,13 +409,11 @@ export async function startRun(deps, input = {}) {
   if (installErr) {
     return installErr
   }
-  const pin = pinArgs(settings)
-  if (pin) {
-    const pinErr = await runMte(deps, settings, 'pin', pin, ws.path)
-    if (pinErr) {
-      return pinErr
-    }
+  const { err: pinErr, pinned } = await applyPins(deps, settings, ws.path)
+  if (pinErr) {
+    return pinErr
   }
+  const linkFailures = await attachLinks(deps, ws, links)
   if (existing.claim?.claimed) {
     const releaseErr = await runMte(deps, settings, 'release', ['planner', 'release'], ws.path)
     if (releaseErr) {
@@ -373,7 +425,7 @@ export async function startRun(deps, input = {}) {
     const launched = await launchPlanner(deps, ws, settings, prompt)
     // Orca does not record who coordinates a run or which model a worker runs: remember it for the panel
     await recordLaunch(deps, launched.sessionId ?? launched.terminalId, launchRecord(goal, ws, settings))
-    return { ok: true, workspace: ws, ...launched, pinned: Boolean(pin), truncated: prompt.includes(TRUNCATION_MARKER), replacedStale: Boolean(stale) }
+    return { ok: true, workspace: ws, ...launched, pinned, truncated: prompt.includes(TRUNCATION_MARKER), replacedStale: Boolean(stale), linkFailures }
   } catch (error) {
     return fail('launch', String(error?.code ?? 'action_failed'), String(error?.message ?? error))
   }
@@ -385,24 +437,24 @@ function launchRecord(goal, ws, settings) {
     goal: String(goal).trim().slice(0, 200),
     workspacePath: ws.path,
     at: Date.now(),
-    ...Object.fromEntries(['plannerAgent', 'plannerModel', 'plannerEffort', 'plannerSurface', 'workerAgent', 'workerModel', 'workerEffort'].map((k) => [k, settings[k]]))
+    ...Object.fromEntries(CHOICE_SETTINGS.map((k) => [k, settings[k]]))
   }
 }
 
-/** `worktree show`'s row for the focused workspace: the repo id (`worktree create --repo` needs it; path: only resolves main checkouts, live-probed) and the Links chips. */
+/** `worktree show`'s row for the focused workspace: the repo id (`worktree create --repo` needs it; path: only resolves main checkouts, live-probed). */
 export async function workspaceRow(deps, ws) {
   const shown = await orcaJson(deps, ['worktree', 'show', ...worktreeTarget(ws)])
-  return { repoId: shown?.worktree?.repoId ?? null, links: linksFromItems(shown?.worktree?.linkedItems) }
+  return { repoId: shown?.worktree?.repoId ?? null }
 }
 
 /**
- * Start run in a fresh workspace: `orca worktree create` (name or goal slug, base branch, --no-parent, the current
+ * Start run in a fresh workspace: `orca worktree create` (name or goal slug, base branch, --no-parent, the run's
  * slot links as flags; reference chips attach right after via `orca reference add` — create cannot combine them,
  * live-probed), then `mte install`/`mte pin set` against the NEW path and the planner launch there. A brand-new
  * worktree can hold no planner claim, so the claim pre-check is skipped. A step that fails after creation reports
  * the created worktree's name; it is never auto-deleted.
  */
-async function startRunInNewWorkspace(deps, settings, ws, input) {
+async function startRunInNewWorkspace(deps, settings, ws, input, links) {
   const name = String(input.workspaceName ?? '').trim() || goalSlug(String(input.goal ?? ''))
   let row
   try {
@@ -413,7 +465,7 @@ async function startRunInNewWorkspace(deps, settings, ws, input) {
   if (!row.repoId) {
     return fail('create', 'no_repo', `The focused workspace ${ws.name} does not report a repo id: the new-workspace start needs one.`)
   }
-  const { argv, deferred } = createWorkspaceArgs({ name, repoId: row.repoId, base: input.baseBranch, links: row.links })
+  const { argv, deferred } = createWorkspaceArgs({ name, repoId: row.repoId, base: input.baseBranch, links })
   let created
   try {
     created = (await orcaJson(deps, argv))?.worktree
@@ -438,18 +490,15 @@ async function startRunInNewWorkspace(deps, settings, ws, input) {
   if (installErr) {
     return fail('install', installErr.error.code, createdNote(installErr.error.message))
   }
-  const pin = pinArgs(settings)
-  if (pin) {
-    const pinErr = await runMte(deps, settings, 'pin', pin, target.path)
-    if (pinErr) {
-      return fail('pin', pinErr.error.code, createdNote(pinErr.error.message))
-    }
+  const { err: pinErr, pinned } = await applyPins(deps, settings, target.path)
+  if (pinErr) {
+    return fail('pin', pinErr.error.code, createdNote(pinErr.error.message))
   }
   const prompt = buildBootstrapPrompt(input.goal, setupNote(settings))
   try {
     const launched = await launchPlanner(deps, target, settings, prompt)
     await recordLaunch(deps, launched.sessionId ?? launched.terminalId, launchRecord(input.goal, target, settings))
-    return { ok: true, workspace: target, ...launched, pinned: Boolean(pin), truncated: prompt.includes(TRUNCATION_MARKER), createdWorkspace: { id: target.id, name: target.name }, linkFailures }
+    return { ok: true, workspace: target, ...launched, pinned, truncated: prompt.includes(TRUNCATION_MARKER), createdWorkspace: { id: target.id, name: target.name }, linkFailures }
   } catch (error) {
     return fail('launch', String(error?.code ?? 'action_failed'), createdNote(String(error?.message ?? error)))
   }
@@ -952,7 +1001,7 @@ export async function searchGoal(deps, { q }, { isStale = () => false } = {}) {
   return { items: [...lin, ...gh], hints }
 }
 
-// ---- panel links: link/unlink issues and PRs on the focused workspace ----
+// ---- run links: issues, PRs and references the panel attaches to the run's workspace at start ----
 
 const LINK_FLAGS = { issue: '--issue', pr: '--pr', linear: '--linear-issue' }
 // host workspace ids already carry their selector shape (`identity:wt2:local:<uuid>`, folders `folder:<id>`);
@@ -965,49 +1014,3 @@ export function linkAddArgs(ws, ref) {
   return flag ? ['worktree', 'set', ...worktreeTarget(ws), flag, ref.value] : ['reference', 'add', ref.value, ...worktreeTarget(ws)]
 }
 
-/** argv that unlinks a chip: slot flags clear with null, references remove by URL. */
-export function linkRemoveArgs(ws, link) {
-  const flag = LINK_FLAGS[link.kind]
-  return flag ? ['worktree', 'set', ...worktreeTarget(ws), flag, 'null'] : ['reference', 'remove', String(link.value ?? link.url), ...worktreeTarget(ws)]
-}
-
-/** Links of the focused workspace for the snapshot: `worktree show --json`'s linkedItems as chips. */
-export async function readLinks(deps, ws) {
-  const shown = await orcaJson(deps, ['worktree', 'show', ...worktreeTarget(ws)])
-  return linksFromItems(shown?.worktree?.linkedItems)
-}
-
-/** `link.add`: parse the typed ref, then link it on the focused workspace; failures come back as { ok, error }. */
-export async function addLink(deps, { ref } = {}) {
-  const parsed = parseRef(ref)
-  if (!parsed) {
-    return fail('link', 'unparsed_ref', `“${String(ref ?? '').slice(0, 60)}” is not an identifier or URL: pick a suggestion instead.`)
-  }
-  const ws = await resolveWorkspace(deps.host)
-  if (!ws) {
-    return fail('workspace', 'no_workspace', 'No workspace is focused.')
-  }
-  try {
-    await orcaJson(deps, linkAddArgs(ws, parsed))
-    return { ok: true }
-  } catch (error) {
-    return fail('link', 'link_failed', String(error?.message ?? error))
-  }
-}
-
-/** `link.remove`: unlink a chip from the focused workspace. */
-export async function removeLink(deps, { kind, value } = {}) {
-  if (!kind) {
-    return fail('link', 'bad_link', 'Name which link to remove.')
-  }
-  const ws = await resolveWorkspace(deps.host)
-  if (!ws) {
-    return fail('workspace', 'no_workspace', 'No workspace is focused.')
-  }
-  try {
-    await orcaJson(deps, linkRemoveArgs(ws, { kind, value }))
-    return { ok: true }
-  } catch (error) {
-    return fail('link', 'link_failed', String(error?.message ?? error))
-  }
-}

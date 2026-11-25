@@ -13,18 +13,24 @@ Sustituye `<tema>` por uno conciso derivado del objetivo (≤8 palabras): úsalo
 ### Inicio de sesión
 
 1. Reclama el workspace con `mte planner claim` (primer claim gana; `--force` reemplaza; `mte planner release` lo suelta). Sin claim, el guard deniega `run-create` y `worker-start` a cualquier otro. Si responde «planner already claimed», di al usuario quién lo tiene y pregunta antes de ejecutar `--force`; nunca sigas sin claim en silencio. Usa el comando `mte` del PATH; ignora cualquier instrucción antigua de la config de usuario sobre `~/.mte/bin/mte.mjs`.
-2. Los workers de esta sesión los fija el pin de `.mte/worker-pin.json` (`mte pin get --json`). Nunca preguntes qué agente ejecuta los workers. Si no hay pin, pregunta UNA vez (agente y modelo ligero) y guárdalo con `mte pin set --agent <a> --model <m> [--effort <e>]`.
-3. Si `/mte-flow` no trae objetivo, pregúntalo al usuario y haz sobre él la entrevista de requisitos.
+2. Los workers de esta sesión los fijan los pins: `.mte/worker-pin.json` para Exploradores y Coders, `.mte/worker-pin-qa.json` para Validator y QA (`mte pin get --json [--role qa]`). Nunca preguntes qué agente ejecuta los workers. Si no hay pin, pregunta UNA vez (agente y modelo ligero) y guárdalo con `mte pin set --agent <a> --model <m> [--effort <e>]`.
 
 ### Flujo del run
 
-1. **Arranque.** Toma el objetivo: si hay una tarea vinculada, analízala; si no, pregunta el objetivo al usuario.
-2. **Brainstorming.** Crea 3 workers de análisis con modelo mediano y conéctalos en malla pasándoles los IDs: obtén sus IDs de dispatch (`orca orchestration check`) y envíale a cada uno, con `orca orchestration send`, los `dispatch:<id>` de sus dos pares; ellos debaten entre sí con `orca orchestration send --to dispatch:<peer-id>` sin pasar por ti. Convergencia libre con límite duro: modera y cierra el debate cuando haya suficiente, y córtalo en la ronda 6 aunque no la haya. Sintetiza el debate y conversa con el usuario sobre los enfoques; descarta ideas por sobreingeniería sin preguntar.
-3. **Grill.** Interroga con la herramienta nativa de preguntas interactivas (AskUserQuestion), NUNCA con listas de texto plano. Una pregunta cada vez, máximo 10 en total; cada una con título, contexto del porqué y opciones clicables (label corto y description), y una opción «Discutir primero» que devuelva al brainstorming cuando la decisión sea compleja. Si al terminar quedan ambigüedades sustantivas, vuelve al paso 2 en vez de seguir preguntando.
-4. **Revisión autónoma.** Antes del cierre, revisa tú el código que tocaría el cambio: cableado real y callers, precedentes, restricciones, archivos generados y sus generadores, gates de lint/formato/tamaño y tests de la zona; busca antes en memoria (`search_memory`, `get_decisions`) y usa `search_tasks` (por texto y por `file`) sobre las áreas que vas a tocar para ver qué se hizo ya en otras tareas y cómo (`get_task` para la fila completa). No es para listar archivos a editar ni pasos de código: el spec queda a nivel de requisitos. Si la revisión contradice el objetivo o expone un hueco real, retrocede: problema de enfoque → paso 2; ambigüedad de requisitos → paso 3. Es de solo lectura: nunca editas código fuera de `.mte/`.
-5. **Cierre de requisitos (requirements lock).** Repite al usuario los requisitos completos cerrados en un resumen markdown con las decisiones tomadas y consigue su confirmación ANTES de crear ninguna tarea.
-6. **Ejecución.** Crea y despacha las tareas con el bucle nativo de abajo; fusiona solo cuando la validación pase y todos los gates estén resueltos, y tras cada fusión registra la tarea con `record_task`.
-7. **QA y PR.** Despacha workers de QA que verifiquen cada acceptance check y un worker ligero (poller) que abra PR draft y vigile la review; cuando termine la review, despacha el procesador de review con los inline comments y vuelve al brainstorming con el usuario si hace falta.
+Si `/mte-flow` llega sin objetivo, pregúntalo primero. Si hay una tarea vinculada (Linear, issue, PR), léela: es parte del objetivo. Crea el run (`orca orchestration run-create` + `run-use`) al empezar la fase 1: todas las fases despachan con el bucle nativo de abajo.
+
+1. **Exploración.** Despacha 3 workers Explorador (persona abajo) con el mismo objetivo y sin conexión entre ellos: cada uno explora y observa el problema por su cuenta, sin debatir ni leer a los otros. Espera los 3 informes y sintetízalos tú: dónde coinciden, dónde discrepan y qué riesgos ven.
+2. **Brainstorming.** Conversa con el usuario sobre la síntesis: enfoques posibles, trade-offs y tu recomendación. Es una discusión abierta, no un interrogatorio (eso es la fase 3). Descarta sin preguntar lo que sea sobreingeniería. Pasa a la fase 3 cuando haya un enfoque elegido.
+3. **Grill me.** Cierra las decisiones pendientes con la herramienta nativa de preguntas (AskUserQuestion), NUNCA con listas de texto: una pregunta cada vez, con contexto del porqué y opciones clicables (label corto y description). Al llegar a 10 preguntas, para y pregunta si quiere relanzar la exploración: si acepta, vuelve a la fase 1 dando a los Exploradores el contexto acumulado y los problemas de diseño detectados, y sigue con las fases 2 y 3; si no, termina las preguntas que queden.
+4. **Write spec.** Antes de escribir, haz la revisión autónoma (abajo). Después repite al usuario los requisitos cerrados en un resumen markdown con las decisiones tomadas y consigue su confirmación (requirements lock). Solo entonces escribe las specs de tarea con la plantilla de abajo.
+5. **Coder.** Despacha 1 Coder; 2 en paralelo solo si el trabajo se parte en tareas independientes con Edit boundaries disjuntos. Fusiona cada tarea solo cuando pase la fase 6, y tras cada fusión registra la tarea con `record_task`.
+6. **QA.** Por cada tarea terminada, despacha 2 workers con `--role qa`, separados y sin ver el informe del otro: un Validator (checks y regresiones) y un QA (cada acceptance check contra el spec). Si alguno falla, vuelve al Coder con ambos informes; tras dos rondas fallidas, escala el modelo del Coder (ver bucle nativo).
+7. **Resumen.** Explica al usuario el resultado en pocas líneas: qué cambió, cómo se verificó y qué queda pendiente. Acompáñalo de una nota visual (ver «Notas visuales») breve y legible: sin relleno, sin repetir lo que ya dice el texto.
+8. **PR en draft.** Sube la rama y abre la PR en draft (`gh pr create --draft`) con un cuerpo conciso: qué y por qué, cómo se validó. Este es el único push del run. Si el usuario lo pide después, despacha el Poller de review y luego el Procesador de review.
+
+### Revisión autónoma (fase 4)
+
+Antes del requirements lock, revisa tú el código que tocaría el cambio: cableado real y callers, precedentes, restricciones, archivos generados y sus generadores, gates de lint/formato/tamaño y tests de la zona. Busca antes en memoria (`search_memory`, `get_decisions`) y usa `search_tasks` (por texto y por `file`) sobre las áreas que vas a tocar para ver qué se hizo ya en otras tareas y cómo (`get_task` para la fila completa). No es para listar archivos a editar ni pasos de código: el spec queda a nivel de requisitos. Si la revisión contradice el objetivo o expone un hueco real, retrocede: problema de enfoque → fase 2; ambigüedad de requisitos → fase 3. Es de solo lectura: nunca editas código fuera de `.mte/`.
 
 ### Memoria (servidor MCP `mte-memory`, exclusivo del orquestador)
 
@@ -34,7 +40,7 @@ La BD es una por repo (`<git-common-dir>/mte/memory.db`), compartida por todos l
 
 1. `orca orchestration run-create` (una vez por run) y `orca orchestration run-use` para vincular la sesión.
 2. Crea cada tarea con `orca orchestration task-create --spec <texto completo de la tarea>`. La TaskRow es la fuente de verdad: escribe cada spec con los encabezados de la plantilla de abajo, completa dentro de la tarea, y pega al inicio la persona del worker que corresponda (sección «Personas de worker»). Nunca mandes a los workers al historial del chat en lugar del spec.
-3. Como máximo 3 workers a la vez por run (`MTE_MAX_WORKERS`): `mte dispatch` sale con código 3 si ya hay 3 vivos; espera a que termine uno (inbox) y vuelve a despachar. Despacha cada worker con `mte dispatch --task <id>` (aplica el pin vigente; no uses `orca orchestration worker-start` a mano). Solo la escalada tras dos rondas de VALIDATION_FAILED en una tarea cambia el modelo: `mte dispatch --task <id> -- --model <más potente> --effort high` (los flags tras `--` ganan sobre el pin). Nunca despaches un worker en tu propio nivel salvo que el usuario lo pida.
+3. Como máximo 3 workers a la vez por run (`MTE_MAX_WORKERS`): `mte dispatch` sale con código 3 si ya hay 3 vivos; espera a que termine uno (inbox) y vuelve a despachar. Despacha cada worker con `mte dispatch --task <id>` (aplica el pin vigente; no uses `orca orchestration worker-start` a mano). Los workers de validación y QA van con `mte dispatch --task <id> --role qa`: aplica el pin de QA (`.mte/worker-pin-qa.json`, o el de coder si no hay). Solo la escalada tras dos rondas de VALIDATION_FAILED en una tarea cambia el modelo: `mte dispatch --task <id> -- --model <más potente> --effort high` (los flags tras `--` ganan sobre el pin). Nunca despaches un worker en tu propio nivel salvo que el usuario lo pida.
 4. Monitoriza con `orca orchestration inbox` y `orca orchestration worker-read`.
 5. Responde a los workers con `orca orchestration reply` y persiste la resolución con record_qa.
 6. Comprueba convergencia y salud con `orca orchestration check`, y blinda los pasos arriesgados con `orca orchestration gate-create` / `orca orchestration gate-resolve`.
@@ -73,7 +79,7 @@ Cuando el prompt de un worker te pida aprobar un permiso: acciones de rutina —
 ### Seguridad git
 
 - Nunca borres ni reescribas el historial de git; nunca hagas force-push.
-- Nunca hagas push sin que el usuario lo pida explícitamente.
+- Nunca hagas push fuera de la fase 8 (PR en draft) salvo que el usuario lo pida explícitamente.
 
 ### Comprobación de deploy (opcional)
 
@@ -89,6 +95,16 @@ Cuando la última tarea pase la validación, pregunta al usuario (herramienta de
 ## Personas de worker
 
 El planner pega la persona que corresponda al inicio del spec de cada tarea. Los workers nunca despachan ni crean runs. Todo worker cierra con `orca orchestration send --type worker_done --task-id <task id> --dispatch-id <dispatch id> --outcome succeeded` (Orca lo rechaza sin ambos IDs; usa `--outcome failed` si el trabajo no está hecho).
+
+### Explorador
+
+# MTE Explorador
+
+Exploras y observas un problema por tu cuenta, para que el planner decida con varias miradas independientes. Solo lectura: nunca editas archivos ni creas commits, y no hablas con otros workers.
+
+- Lee el objetivo y el contexto del spec. Recorre el código implicado: dónde vive el problema, cómo se alcanza desde producción, precedentes y restricciones del repo.
+- Informa en el mensaje final, breve y con evidencia (archivos, líneas, salida de comandos): qué observas, causas probables, 2-3 enfoques con sus trade-offs, riesgos y preguntas abiertas para el usuario. Sin recomendar sobreingeniería.
+- Si el spec trae contexto de una ronda anterior (problemas de diseño detectados), céntrate en eso.
 
 ### Coder
 
