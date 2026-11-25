@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
-import { claimCallout, createSearcher, filterRows, fitSelection, goalText, groupRows, iconFor, linksFromItems, listHints, listKey, modelRows, moveIndex, mteDriftHint, mteRow, originIcon, parseRef, startNote } from '../panel/logic.mjs'
+import { claimCallout, createSearcher, createWorkspaceArgs, filterRows, fitSelection, goalSlug, goalText, groupRows, iconFor, linksFromItems, listHints, listKey, modelRows, moveIndex, mteDriftHint, mteRow, originIcon, parseRef, startNote } from '../panel/logic.mjs'
 
 test('model rows: default first, labels when the CLI gives them, an unlisted current model stays', () => {
   const info = { models: [{ id: 'gemini-x-high', label: 'Gemini X (High)' }, { id: 'p/m' }] }
@@ -203,6 +203,54 @@ test('AC3: the panel and worker wire link.add/link.remove, errors surfacing as t
   const main = await readFile(new URL('../worker/main.mjs', import.meta.url), 'utf8')
   assert.match(main, /panels\.handle\('link.add'/)
   assert.match(main, /panels\.handle\('link.remove'/)
+})
+
+// ---- panel v4: new-workspace start ----
+
+test('AC2: the goal slug is lowercase words joined with -; anything unsluggable falls back to mte-run', () => {
+  assert.equal(goalSlug('Build the thing!'), 'build-the-thing')
+  assert.equal(goalSlug('  Fix login — 2025/05  '), 'fix-login-2025-05')
+  assert.equal(goalSlug('AÑOS de café: edición'), 'anos-de-cafe-edicion')
+  assert.equal(goalSlug(''), 'mte-run')
+  assert.equal(goalSlug('!!! ???'), 'mte-run')
+  assert.equal(goalSlug('x'.repeat(80)), 'x'.repeat(48), 'capped at 48 chars')
+  assert.equal(goalSlug('a'.repeat(47) + ' b'), 'a'.repeat(47), 'a truncated tail never keeps a cut word with a trailing dash')
+})
+
+test('AC2: create argv: name, repo id selector, --no-parent, base flag; slot links per kind; reference links deferred (create cannot mix them, live-probed)', () => {
+  const { argv, deferred } = createWorkspaceArgs({
+    name: 'my-ws',
+    repoId: 'r-9',
+    base: ' origin/main ',
+    links: [
+      { kind: 'issue', value: '45' },
+      { kind: 'pr', value: '7' },
+      { kind: 'linear', value: 'ENG-123' },
+      { kind: 'reference', value: 'https://gitlab.com/a/b/-/merge_requests/3' },
+      { kind: 'reference', value: '' }
+    ]
+  })
+  assert.deepEqual(argv, ['worktree', 'create', '--name', 'my-ws', '--repo', 'id:r-9', '--no-parent', '--base-branch', 'origin/main', '--issue', '45', '--pr', '7', '--linear-issue', 'ENG-123'])
+  assert.deepEqual(deferred, ['https://gitlab.com/a/b/-/merge_requests/3'])
+  // empty base: the repo default applies, so the flag is not passed at all
+  assert.ok(!createWorkspaceArgs({ name: 'n', repoId: 'r', base: '  ', links: [] }).argv.includes('--base-branch'))
+})
+
+test('AC2: the start note names the created workspace, and link failures that did not block the run are never silent', () => {
+  const note = startNote({ surface: 'chat', createdWorkspace: { id: 'r::/p', name: 'fix-login' } })
+  assert.ok(note.startsWith('New workspace “fix-login” created. Planner started in a native chat.'), note)
+  assert.match(startNote({ surface: 'chat', createdWorkspace: { name: 'w' }, linkFailures: ['https://x (nope)'] }), /could not attach 1 link: https:\/\/x \(nope\)/)
+  assert.match(startNote({ surface: 'chat', createdWorkspace: { name: 'w' }, linkFailures: ['a', 'b'] }), /could not attach 2 links: a; b/)
+})
+
+test('AC5: the new-workspace inputs exist hidden; the panel reveals them only while the toggle is on', async () => {
+  const html = await readFile(new URL('../panel/index.html', import.meta.url), 'utf8')
+  assert.match(html, /<input type="checkbox" id="new-ws"/)
+  assert.match(html, /<div class="row" id="ws-fields"[^>]*hidden/)
+  assert.match(html, /id="ws-base" value="origin\/main"/)
+  const js = await readFile(new URL('../panel/panel.js', import.meta.url), 'utf8')
+  assert.match(js, /\$\('new-ws'\)\.onchange[^\n]*\n[^\n]*ws-fields'\)\.hidden = !/)
+  assert.match(js, /newWorkspace: \$\('new-ws'\)\.checked/)
 })
 
 test('AC4: a failed links read is never silent: the worker stores linksError and the panel renders it as the hint', async () => {

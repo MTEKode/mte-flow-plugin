@@ -233,9 +233,13 @@ async function act(name, run, success) {
   void load()
 }
 const startRun = (replace = false) =>
-  act('start', () => req('run.start', { goal: goal.value, plannerAgent: st.planner.agent, plannerModel: st.planner.model || '', plannerSurface: st.planner.surface, plannerEffort: st.planner.effort || '', workerAgent: st.worker.agent, workerModel: st.worker.model || '', workerEffort: st.worker.effort || '', replace }),
+  act('start', () => req('run.start', { goal: goal.value, plannerAgent: st.planner.agent, plannerModel: st.planner.model || '', plannerSurface: st.planner.surface, plannerEffort: st.planner.effort || '', workerAgent: st.worker.agent, workerModel: st.worker.model || '', workerEffort: st.worker.effort || '', replace, newWorkspace: $('new-ws').checked, workspaceName: $('ws-name').value, baseBranch: $('ws-base').value }),
     (r) => startNote(r))
 $('start').onclick = () => startRun(false)
+// the name/base inputs only exist for a new-workspace start
+$('new-ws').onchange = (e) => {
+  $('ws-fields').hidden = !e.target.checked
+}
 $('install').onclick = () => act('install', () => req('workspace.install'), () => 'MTE installed in this workspace.')
 $('repair').onclick = () => act('repair', () => req('setup.repair'), () => 'Setup finished: mte and the mte-flow skill are ready.')
 

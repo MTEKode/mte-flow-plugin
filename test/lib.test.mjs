@@ -868,3 +868,121 @@ test('AC4: readLinks maps worktree show linkedItems to chips', async () => {
   const broken = stubs({ exec: async () => ({ code: 1, stdout: '', stderr: 'no such worktree' }) })
   await assert.rejects(() => readLinks(broken.deps, { id: 'wt-1' }))
 })
+
+// ---- panel v4: start run in a new workspace ----
+
+/** stubs() whose orca answers the create flow; `show` carries repoId + linkedItems, `create` a worktree receipt. */
+function newWsStubs({ show, create, launch = { outcome: { kind: 'structured', handle: 'h1', sessionId: 's1' } }, addRef = {}, settings = {} } = {}) {
+  const { deps, calls } = stubs({
+    settings,
+    exec: async (file, args, opts) => {
+      calls.push({ kind: 'exec', file, args, cwd: opts?.cwd })
+      if (file !== ORCA) {
+        return args[0] === 'planner' && args[1] === 'show' ? { code: 0, stdout: '{"claimed":false}', stderr: '' } : { code: 0, stdout: '', stderr: '' }
+      }
+      if (args[0] === 'worktree' && args[1] === 'show') return show ? orcaOut(show) : { code: 1, stdout: '', stderr: 'show refused' }
+      if (args[0] === 'worktree' && args[1] === 'create') return create ?? orcaOut({ worktree: { id: 'r-9::/new/ws', path: '/new/ws', displayName: 'shown' } })
+      if (args[0] === 'reference') return orcaOut(addRef)
+      if (args[0] === 'agent' && args[1] === 'launch') return orcaOut(launch)
+      return { code: 0, stdout: '', stderr: '' }
+    }
+  })
+  const mem = new Map()
+  deps.storage = { get: async (k) => mem.get(k) ?? null, set: async (k, v) => void mem.set(k, v) }
+  return { deps, calls, mem }
+}
+const FOCUS_ROW = { worktree: { repoId: 'r-9', linkedItems: [{ provider: 'github', type: 'issue', number: 45, url: 'u45' }, { provider: 'linear', type: 'issue', number: 0, linearIdentifier: 'ENG-123', url: 'lu' }, { provider: 'gitlab', type: 'mr', number: 3, url: 'https://gitlab.com/a/b/-/merge_requests/3' }] } }
+const orcaArgs = (calls, ...head) => calls.filter((c) => c.file === ORCA && head.every((a, i) => c.args[i] === a)).map((c) => c.args)
+
+test('AC1: the toggle off keeps the 0.8.1 argv and step sequence exactly (no worktree show/create)', async () => {
+  const { deps, calls } = newWsStubs({ settings: { workerModel: 'm' } })
+  const result = await startRun(deps, { goal: 'build the thing' })
+  assert.equal(result.ok, true)
+  assert.equal(result.createdWorkspace, undefined)
+  assert.deepEqual(calls.filter((c) => c.kind === 'exec').map((c) => c.args.slice(0, 2).join(' ')), ['planner show', 'install', 'pin set', 'agent launch'])
+  assert.equal(orcaArgs(calls, 'worktree', 'show').length, 0)
+  assert.equal(orcaArgs(calls, 'worktree', 'create').length, 0)
+  assert.ok(orcaArgs(calls, 'agent', 'launch')[0].includes('path:/repo/feat'), 'the focused launch still uses path:')
+})
+
+test('AC2: the toggle on creates with the typed name, base flag, --no-parent, the focused repo id and one slot flag per link kind', async () => {
+  const { deps, calls } = newWsStubs({ show: FOCUS_ROW })
+  const result = await startRun(deps, { goal: 'build the thing', newWorkspace: true, workspaceName: 'my-run', baseBranch: ' origin/main ' })
+  assert.equal(result.ok, true)
+  assert.deepEqual(orcaArgs(calls, 'worktree', 'create'), [['worktree', 'create', '--name', 'my-run', '--repo', 'id:r-9', '--no-parent', '--base-branch', 'origin/main', '--issue', '45', '--linear-issue', 'ENG-123', '--json']])
+  assert.deepEqual(orcaArgs(calls, 'reference', 'add'), [['reference', 'add', 'https://gitlab.com/a/b/-/merge_requests/3', '--worktree', 'r-9::/new/ws', '--json']])
+})
+
+test('AC2: an empty name falls back to the goal slug; an unsluggable goal to mte-run', async () => {
+  const a = newWsStubs({ show: { worktree: { repoId: 'r-9', linkedItems: [] } } })
+  await startRun(a.deps, { goal: 'Build the thing!', newWorkspace: true, workspaceName: '', baseBranch: '' })
+  const argv = orcaArgs(a.calls, 'worktree', 'create')[0]
+  assert.deepEqual(argv.slice(0, 4), ['worktree', 'create', '--name', 'build-the-thing'])
+  assert.ok(!argv.includes('--base-branch'), 'empty base: the repo default, no flag')
+  const b = newWsStubs({ show: { worktree: { repoId: 'r-9', linkedItems: [] } } })
+  await startRun(b.deps, { goal: '???', newWorkspace: true })
+  assert.equal(orcaArgs(b.calls, 'worktree', 'create')[0][3], 'mte-run')
+})
+
+test('AC3: install and pin run against the NEW path; the launch takes the raw created id and records it', async () => {
+  const { deps, calls, mem } = newWsStubs({ show: { worktree: { repoId: 'r-9', linkedItems: [] } }, settings: { workerAgent: 'antigravity', workerModel: 'a/b' } })
+  const result = await startRun(deps, { goal: 'x', newWorkspace: true, plannerModel: 'opus', plannerEffort: 'high' })
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.createdWorkspace, { id: 'r-9::/new/ws', name: 'shown' })
+  assert.deepEqual(result.workspace.path, '/new/ws')
+  const installs = calls.filter((c) => c.kind === 'exec' && c.file !== ORCA && c.args[0] === 'install')
+  assert.deepEqual(installs.map((c) => c.cwd), ['/new/ws'])
+  assert.deepEqual(calls.find((c) => c.args?.[0] === 'pin').cwd, '/new/ws')
+  const launch = orcaArgs(calls, 'agent', 'launch')[0]
+  assert.deepEqual(launch.slice(0, 8), ['agent', 'launch', '--agent', 'claude', '--worktree', 'r-9::/new/ws', '--surface', 'chat'])
+  assert.ok(!launch.some((a) => a.startsWith('id:')), 'the raw receipt id, never an id:-prefixed selector')
+  assert.ok(!launch.includes('path:/new/ws'))
+  assert.ok(launch.join(' ').includes('--model opus --effort high'))
+  assert.equal(mem.get('launches').s1.workspacePath, '/new/ws')
+  assert.equal(orcaArgs(calls, 'planner', 'show').length, 0, 'a brand-new worktree skips the claim pre-check')
+})
+
+test('AC4: a creation failure stops before install/launch and does not name a workspace', async () => {
+  const { deps, calls } = newWsStubs({ show: { worktree: { repoId: 'r-9', linkedItems: [] } }, create: { code: 1, stdout: '', stderr: 'branch exists' } })
+  const result = await startRun(deps, { goal: 'x', newWorkspace: true })
+  assert.equal(result.ok, false)
+  assert.equal(result.error.code, 'create_failed')
+  assert.match(result.error.message, /branch exists/)
+  assert.ok(!result.error.message.includes('was created'))
+  assert.equal(calls.filter((c) => c.kind === 'exec' && (c.args[0] === 'install' || c.args[0] === 'pin' || c.args[0] === 'agent')).length, 0)
+})
+
+test('AC4: a post-creation failure names the created workspace; a failed reference link is reported, not swallowed', async () => {
+  const install = newWsStubs({ show: FOCUS_ROW })
+  const base = install.deps.exec
+  install.deps.exec = async (file, args, opts) => (file !== ORCA && args[0] === 'install' ? { code: 3, stdout: '', stderr: 'disk full' } : base(file, args, opts))
+  const r1 = await startRun(install.deps, { goal: 'x', newWorkspace: true })
+  assert.equal(r1.ok, false)
+  assert.equal(r1.error.code, 'mte_failed')
+  assert.match(r1.error.message, /^New workspace “shown” was created and stays; /)
+  assert.match(r1.error.message, /disk full/)
+  assert.equal(orcaArgs(install.calls, 'agent', 'launch').length, 0)
+
+  const launch = newWsStubs({ show: { worktree: { repoId: 'r-9', linkedItems: [] } }, launch: null })
+  const base2 = launch.deps.exec
+  launch.deps.exec = async (file, args, opts) => (file === ORCA && args[0] === 'agent' && args[1] === 'launch' ? { code: 1, stdout: '', stderr: 'refused' } : base2(file, args, opts))
+  const r2 = await startRun(launch.deps, { goal: 'x', newWorkspace: true })
+  assert.equal(r2.error.code, 'orca_failed')
+  assert.match(r2.error.message, /New workspace “shown” was created and stays; refused/)
+
+  const badRef = newWsStubs({ show: FOCUS_ROW, addRef: null })
+  const base3 = badRef.deps.exec
+  badRef.deps.exec = async (file, args, opts) => (args[0] === 'reference' ? { code: 1, stdout: '', stderr: 'bad url' } : base3(file, args, opts))
+  const r3 = await startRun(badRef.deps, { goal: 'x', newWorkspace: true })
+  assert.equal(r3.ok, true)
+  assert.deepEqual(r3.linkFailures, ['https://gitlab.com/a/b/-/merge_requests/3 (bad url)'])
+})
+
+test('AC4: an unreadable focused workspace fails the create step, not silently', async () => {
+  const { deps, calls } = newWsStubs({})
+  const result = await startRun(deps, { goal: 'x', newWorkspace: true })
+  assert.equal(result.ok, false)
+  assert.equal(result.error.code, 'worktree_read_failed')
+  assert.match(result.error.message, /show refused/)
+  assert.equal(calls.filter((c) => c.kind === 'exec').length, 1)
+})

@@ -113,6 +113,11 @@
     <button type="button" class="primary" id="start">Start run</button>
     <button type="button" id="install">Install MTE in this workspace</button>
     <button type="button" id="repair">Repair setup</button>
+    <label class="label" style="display:flex;align-items:center;gap:5px;white-space:nowrap"><input type="checkbox" id="new-ws" style="width:auto;height:auto"> New workspace</label>
+  </div>
+  <div class="row" id="ws-fields" style="gap:6px" hidden>
+    <input id="ws-name" placeholder="Workspace name (empty: from the goal)" aria-label="New workspace name">
+    <input id="ws-base" value="origin/main" placeholder="Base branch" aria-label="Base branch">
   </div>
   <div class="muted" id="ws"></div>
 

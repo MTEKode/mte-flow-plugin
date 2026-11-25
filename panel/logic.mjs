@@ -138,7 +138,50 @@ export function startNote(r) {
     : r.fallback
       ? ' (chat was unavailable, fell back to a terminal)'
       : ''
-  return `${r.replacedStale ? 'The previous planner was closed, so its claim was dropped. ' : ''}Planner started in ${where}${fb}${r.truncated ? `; goal truncated to fit the ${PROMPT_CAP}-char prompt cap` : ''}.`
+  const links = r.linkFailures?.length ? `; could not attach ${r.linkFailures.length} link${r.linkFailures.length === 1 ? '' : 's'}: ${r.linkFailures.join('; ')}` : ''
+  return `${r.createdWorkspace ? `New workspace “${r.createdWorkspace.name}” created. ` : ''}${r.replacedStale ? 'The previous planner was closed, so its claim was dropped. ' : ''}Planner started in ${where}${fb}${r.truncated ? `; goal truncated to fit the ${PROMPT_CAP}-char prompt cap` : ''}${links}.`
+}
+
+/** Workspace name derived from the goal: lowercase words joined with '-', max 48 chars; `mte-run` when nothing is left. */
+export function goalSlug(goal) {
+  const slug = String(goal ?? '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48)
+    .replace(/-+$/g, '')
+  return slug || 'mte-run'
+}
+
+// worktree create takes the slot links as flags (live-probed: --reference cannot mix with them, so reference chips
+// attach after creation through `orca reference add`, the 0.8.1 link path)
+const CREATE_LINK_FLAGS = { issue: '--issue', pr: '--pr', linear: '--linear-issue' }
+
+/**
+ * argv of `orca worktree create` for a fresh run workspace: name, the focused repo (id:<repoId> — path: only
+ * resolves main checkouts, live-probed), base ref (omitted when empty: Orca then uses the repo default),
+ * --no-parent, and one slot flag per link kind. Reference chips are returned as `deferred` urls instead.
+ */
+export function createWorkspaceArgs({ name, repoId, base, links = [] }) {
+  const argv = ['worktree', 'create', '--name', String(name), '--repo', `id:${repoId}`, '--no-parent']
+  if (String(base ?? '').trim()) {
+    argv.push('--base-branch', String(base).trim())
+  }
+  const deferred = []
+  for (const l of links) {
+    const flag = CREATE_LINK_FLAGS[l.kind]
+    if (flag && l.value) {
+      argv.push(flag, String(l.value))
+    } else if (l.kind === 'reference') {
+      const url = String(l.value ?? l.url ?? '').trim()
+      if (url) {
+        deferred.push(url)
+      }
+    }
+  }
+  return { argv, deferred }
 }
 
 /** The planner-claim callout: a live foreign claim warns before Start (Replace offered); a corrupt claim only reports. */
