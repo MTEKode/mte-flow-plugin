@@ -113,9 +113,10 @@ describe('playbook asset', () => {
     }
   })
 
-  it('documents the send-based mesh and the worker_done task/dispatch ids', () => {
+  it('documents independent explorers (no mesh) and the worker_done task/dispatch ids', () => {
     const text = asset('playbook.md')
-    expect(text).toContain('orchestration send --to dispatch:')
+    expect(text).not.toContain('orchestration send --to dispatch:')
+    expect(text).toContain('sin conexión entre ellos')
     expect(text).toContain('record_qa')
     expect(text).toContain('orca orchestration ask')
     expect(text).toMatch(/worker_done[^\n]*--task-id/)

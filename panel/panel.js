@@ -1,5 +1,5 @@
 // MTE Flow panel (html, isolated frame): all data comes from the worker through orca.plugin.request.
-import { claimCallout, createSearcher, filterRows, fitSelection, goalText, groupRows, iconFor, KIND_LABEL, listHints, listKey, modelRows, mteDriftHint, mteRow, originIcon, originOf, parseRef, startNote } from './logic.mjs'
+import { addLink, claimCallout, createSearcher, filterRows, fitSelection, groupRows, iconFor, KIND_LABEL, listHints, listKey, modelRows, mteDriftHint, mteRow, originIcon, originOf, parseRef, startNote } from './logic.mjs'
 
 const $ = (id) => document.getElementById(id)
 const req = (name, params = {}) => orca.plugin.request(name, params, { timeoutMs: 120000 })
@@ -9,7 +9,8 @@ const el = (tag, props = {}, ...kids) => {
   return n
 }
 
-const st = { snap: null, harnesses: [], harnessError: null, models: {}, planner: null, worker: null, busy: null, notice: null, claimedBy: null, prefilled: false }
+// links are the run's own: only what the person adds here, attached to the run's workspace at Start
+const st = { snap: null, harnesses: [], harnessError: null, models: {}, planner: null, worker: null, qa: null, links: [], busy: null, notice: null, claimedBy: null, prefilled: false }
 
 // ---- harness / model / effort selectors (harness, surface and effort are native selects; the model list is searchable) ----
 const opt = (value, ...kids) => el('option', { value }, ...kids)
@@ -109,55 +110,12 @@ function chooser(field, key, title, withSurface) {
   return { draw }
 }
 
-const choosers = [chooser($('f-planner'), 'planner', 'Orchestrator', true), chooser($('f-worker'), 'worker', 'Workers', false)]
+const choosers = [chooser($('f-planner'), 'planner', 'Orchestrator', true), chooser($('f-worker'), 'worker', 'Coder', false), chooser($('f-qa'), 'qa', 'QA', false)]
 const drawChoosers = () => choosers.forEach((c) => c.draw())
 
-// ---- goal box with Linear / PR / issue suggestions ----
 const goal = $('goal')
-const goalList = $('goal-list')
-let items = []
-let gi = 0
-const closeGoal = () => { goalList.hidden = true; goal.setAttribute('aria-expanded', 'false'); goal.setAttribute('aria-activedescendant', ''); items = [] }
-function drawGoal() {
-  goalList.replaceChildren(
-    ...items.map((it, i) => {
-      const row = el('div', { id: `go-${i}`, className: 'opt' + (i === gi ? ' active' : ''), role: 'option' }, el('span', { className: 'tag', textContent: KIND_LABEL[it.kind] }), el('code', { textContent: it.id }), el('span', { className: 't', textContent: it.title }))
-      row.onmousedown = (e) => { e.preventDefault(); pickGoal(it) }
-      return row
-    })
-  )
-  goalList.hidden = items.length === 0
-  goal.setAttribute('aria-expanded', String(items.length > 0))
-  goal.setAttribute('aria-activedescendant', items.length ? `go-${gi}` : '')
-  goalList.querySelector('.active')?.scrollIntoView({ block: 'nearest' })
-}
-function pickGoal(it) { goal.value = goalText(it); closeGoal(); search.cancel(); goal.focus() }
-const search = createSearcher({
-  request: (q) => req('goal.search', { q }),
-  onResult: (res) => {
-    items = res?.items ?? []
-    gi = 0
-    const hint = $('goal-hint')
-    hint.textContent = (res?.hints ?? []).join(' ')
-    hint.hidden = !hint.textContent
-    drawGoal()
-  }
-})
-let picked = false
-goal.addEventListener('input', () => { if (picked) { picked = false } search.input(goal.value) })
-goal.addEventListener('keydown', (e) => {
-  if (goalList.hidden || !items.length) return
-  if (!['ArrowDown', 'ArrowUp', 'Enter', 'Escape'].includes(e.key)) return
-  const r = listKey(gi, items.length, e.key)
-  e.preventDefault()
-  gi = r.index
-  if (r.action === 'select') pickGoal(items[gi])
-  else if (r.action === 'close') closeGoal()
-  else drawGoal()
-})
-goal.addEventListener('blur', () => setTimeout(closeGoal, 120))
 
-// ---- links: exact refs link on Enter, free text searches (goal.search), suggestions and chips link/unlink ----
+// ---- links: exact refs add on Enter, free text searches (goal.search); a suggestion adds only when picked ----
 const links = $('links')
 const linksList = $('links-list')
 let linkItems = []
@@ -178,28 +136,30 @@ function drawLinks() {
   )
   linksList.hidden = linkItems.length === 0
   links.setAttribute('aria-expanded', String(linkItems.length > 0))
-  links.setAttribute('aria-activedescendant', linkItems.length ? `lk-${li}` : '')
+  links.setAttribute('aria-activedescendant', linkItems[li] ? `lk-${li}` : '')
   linksList.querySelector('.active')?.scrollIntoView({ block: 'nearest' })
 }
-async function sendLink(it = {}) {
+function sendLink(it = {}) {
   const ref = String(it?.url || it?.id || links.value).trim()
   closeLinks()
+  linkSearch.cancel()
+  const next = addLink(st.links, ref, it?.id)
+  if (!next) return setLinkHint(`“${ref.slice(0, 60)}” is not an identifier or URL: pick a suggestion instead.`)
   setLinkHint('')
-  const r = await req('link.add', { ref }).catch((e) => ({ ok: false, error: { message: String(e?.message ?? e) } }))
-  if (r.ok) {
-    links.value = ''
-    void load()
-  } else setLinkHint(r.error?.message ?? 'Could not link that.')
+  st.links = next
+  // clear through the editing commands, not .value: Cmd/Ctrl+Z can bring the text back
+  links.select()
+  if (!document.execCommand('delete')) links.value = ''
+  render()
 }
-async function unlink(link) {
-  setLinkHint('')
-  const r = await req('link.remove', { kind: link.kind, value: link.value }).catch((e) => ({ ok: false, error: { message: String(e?.message ?? e) } }))
-  if (!r.ok) setLinkHint(r.error?.message ?? 'Could not unlink that.')
-  void load()
+function unlink(link) {
+  st.links = st.links.filter((l) => l !== link)
+  render()
 }
+// nothing is highlighted until the person moves through the list: Enter never picks a suggestion on its own
 const linkSearch = createSearcher({
   request: (q) => req('goal.search', { q }),
-  onResult: (res) => { linkItems = res?.items ?? []; li = 0; drawLinks() }
+  onResult: (res) => { linkItems = res?.items ?? []; li = -1; drawLinks() }
 })
 links.addEventListener('input', () => {
   setLinkHint('')
@@ -208,12 +168,12 @@ links.addEventListener('input', () => {
 })
 links.addEventListener('keydown', (e) => {
   const exact = parseRef(links.value)
-  if (e.key === 'Enter' && (exact || (!linksList.hidden && linkItems.length))) { e.preventDefault(); sendLink(exact ? {} : linkItems[li]); return }
+  if (e.key === 'Enter' && (exact || (!linksList.hidden && linkItems[li]))) { e.preventDefault(); sendLink(exact ? {} : linkItems[li]); return }
   if (linksList.hidden || !linkItems.length || !['ArrowDown', 'ArrowUp', 'Escape'].includes(e.key)) return
   const r = listKey(li, linkItems.length, e.key)
   e.preventDefault()
   li = r.index
-  if (r.action === 'select') sendLink(linkItems[li])
+  if (r.action === 'select' && linkItems[li]) sendLink(linkItems[li])
   else if (r.action === 'close') closeLinks()
   else drawLinks()
 })
@@ -233,8 +193,8 @@ async function act(name, run, success) {
   void load()
 }
 const startRun = (replace = false) =>
-  act('start', () => req('run.start', { goal: goal.value, plannerAgent: st.planner.agent, plannerModel: st.planner.model || '', plannerSurface: st.planner.surface, plannerEffort: st.planner.effort || '', workerAgent: st.worker.agent, workerModel: st.worker.model || '', workerEffort: st.worker.effort || '', replace, newWorkspace: $('new-ws').checked, workspaceName: $('ws-name').value, baseBranch: $('ws-base').value }),
-    (r) => startNote(r))
+  act('start', () => req('run.start', { goal: goal.value, plannerAgent: st.planner.agent, plannerModel: st.planner.model || '', plannerSurface: st.planner.surface, plannerEffort: st.planner.effort || '', workerAgent: st.worker.agent, workerModel: st.worker.model || '', workerEffort: st.worker.effort || '', qaAgent: st.qa.agent, qaModel: st.qa.model || '', qaEffort: st.qa.effort || '', links: st.links.map((l) => l.ref), replace, newWorkspace: $('new-ws').checked, workspaceName: $('ws-name').value, baseBranch: $('ws-base').value }),
+    (r) => { st.links = []; return startNote(r) })
 $('start').onclick = () => startRun(false)
 // the name/base inputs only exist for a new-workspace start
 $('new-ws').onchange = (e) => {
@@ -253,6 +213,7 @@ async function load() {
       const s = st.snap.settings
       st.planner = { agent: s.plannerAgent, surface: s.plannerSurface, model: s.plannerModel, effort: s.plannerEffort }
       st.worker = { agent: s.workerAgent, model: s.workerModel, effort: s.workerEffort }
+      st.qa = { agent: s.qaAgent, model: s.qaModel, effort: s.qaEffort }
       drawChoosers()
     }
   } catch (e) {
@@ -302,8 +263,7 @@ function render() {
   $('active').textContent = `${s?.activeWorkers ?? 0} active`
   const version = s ? mteRow(s.mte) : null
   $('ws').textContent = (s?.workspace ? `Workspace: ${s.workspace.name} · ${s.workspace.path}` : 'No workspace focused.') + (version ? ` · ${version}` : '')
-  const chips = s?.workspace?.links ?? []
-  if (s?.workspace?.linksError) setLinkHint(`Could not read the workspace links: ${s.workspace.linksError}`)
+  const chips = st.links
   const chipBox = $('chips')
   chipBox.hidden = chips.length === 0
   chipBox.replaceChildren(
@@ -311,7 +271,7 @@ function render() {
       el('span', { className: 'chip', title: l.url || l.label },
         el('span', { className: 'tag', textContent: KIND_LABEL[l.kind] ?? 'Link' }),
         el('span', { className: 't', textContent: l.label }),
-        el('button', { type: 'button', textContent: '×', ariaLabel: `Remove ${l.label}`, disabled: st.busy !== null, onclick: () => unlink(l) }))
+        el('button', { type: 'button', textContent: '×', ariaLabel: `Remove ${l.label}`, onclick: () => unlink(l) }))
     )
   )
   const runs = s?.orchestrators ?? []
@@ -323,7 +283,8 @@ function render() {
             el('summary', {}, ...(l ? [agentBadge(l.plannerAgent)] : []), el('span', { className: 't', textContent: r.title, title: r.title }), ...(l ? [el('span', { className: 'tag', textContent: choiceText(l.plannerModel, l.plannerEffort) })] : []), el('span', { className: 'muted', textContent: `${r.workers.length} worker${r.workers.length === 1 ? '' : 's'}` })),
             ...(r.workers.length
               ? r.workers.map((w) => el('div', { className: 'worker' },
-                  el('div', { className: 'who' }, ...(l ? [agentBadge(l.workerAgent)] : []), el('div', {}, el('div', { textContent: w.taskId || w.dispatchId }), el('div', { className: 'muted', textContent: [l && choiceText(l.workerModel, l.workerEffort), w.state, w.activity !== 'unknown' && w.activity, w.attention && 'needs attention'].filter(Boolean).join(' · ') }))),
+                  // Orca does not say which pin (coder or qa) a worker runs, so no model here
+                  el('div', { className: 'who' }, el('div', {}, el('div', { textContent: w.taskId || w.dispatchId }), el('div', { className: 'muted', textContent: [w.state, w.activity !== 'unknown' && w.activity, w.attention && 'needs attention'].filter(Boolean).join(' · ') }))),
                   btn('Focus', () => act('focus', () => req('workspace.focus', { workspace: w.workspace }), () => 'Workspace focused.'))))
               : [el('div', { className: 'worker muted', textContent: 'No workers running yet.' })]))
           box.ontoggle = () => (box.open ? closedRuns.delete(r.id) : closedRuns.add(r.id))

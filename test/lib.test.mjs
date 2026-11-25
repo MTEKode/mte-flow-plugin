@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  addLink,
   buildBootstrapPrompt,
   checkMte,
   compareVersions,
@@ -23,8 +22,6 @@ import {
   resolveChoices,
   setupNote,
   parseGithubRepo,
-  readLinks,
-  removeLink,
   resolveOrcaCli,
   searchGoal,
   startRun,
@@ -131,7 +128,7 @@ test('start run: planner show, install, pin set, then the orca CLI launch with /
   assert.equal(seq[2].cwd, '/repo/feat')
   assert.deepEqual(seq[3].args, [
     'agent', 'launch', '--agent', 'claude', '--worktree', 'path:/repo/feat', '--surface', 'chat', '--focus',
-    '--prompt', `/mte-flow build the thing\n\n${setupNote({ plannerAgent: 'claude', plannerModel: '', workerAgent: 'claude', workerModel: 'claude-sonnet-5-5', workerEffort: 'high' })}`, '--json'
+    '--prompt', `/mte-flow build the thing\n\n${setupNote({ plannerAgent: 'claude', plannerModel: '', workerAgent: 'claude', workerModel: 'claude-sonnet-5-5', workerEffort: 'high', qaAgent: 'claude' })}`, '--json'
   ])
   assert.deepEqual(seq[3].env, { ORCA_USER_DATA_PATH: '/ud' })
   assert.ok(!calls.some((c) => c.method === 'agent.launch'))
@@ -158,7 +155,7 @@ test('start run falls back to the host agent.launch only when the orca CLI is mi
   })
   const result = await startRun(deps, { goal: 'x' })
   assert.equal(result.ok, true)
-  assert.deepEqual(calls.find((c) => c.method === 'agent.launch').params, { workspaceId: 'wt-1', agent: 'claude', prompt: `/mte-flow x\n\n${setupNote({ plannerAgent: 'claude', workerAgent: 'claude' })}` })
+  assert.deepEqual(calls.find((c) => c.method === 'agent.launch').params, { workspaceId: 'wt-1', agent: 'claude', prompt: `/mte-flow x\n\n${setupNote({ plannerAgent: 'claude', workerAgent: 'claude', qaAgent: 'claude' })}` })
   const failing = stubs({ exec: async (file) => (file === 'mte' ? { code: 0, stdout: '{"claimed":false}', stderr: '' } : { code: 1, stdout: '', stderr: 'launch refused' }) })
   const res = await startRun(failing.deps, { goal: 'x' })
   assert.equal(res.ok, false)
@@ -297,8 +294,8 @@ test('start run records the launch under the planner session and tells the plann
   assert.deepEqual([launch.goal, launch.workspacePath, launch.plannerModel, launch.workerAgent, launch.workerModel, launch.workerEffort], ['build it', '/repo/feat', 'opus', 'antigravity', 'p/m', ''])
   const prompt = calls.find((c) => c.args?.[1] === 'launch').args.at(-2)
   assert.ok(prompt.startsWith('/mte-flow build it\n\n(Run setup'))
-  assert.match(prompt, /Orchestrator: claude · opus · high\. Workers: antigravity · p\/m\. State both/)
-  assert.match(setupNote({ plannerAgent: 'antigravity', plannerModel: '', plannerEffort: 'high', workerAgent: 'claude', workerModel: '' }), /Orchestrator: antigravity · default model\. Workers: claude · default model\./)
+  assert.match(prompt, /Orchestrator: claude · opus · high\. Coder workers: antigravity · p\/m\. QA and validator workers: claude · default model\. State all three/)
+  assert.match(setupNote({ plannerAgent: 'antigravity', plannerModel: '', plannerEffort: 'high', workerAgent: 'claude', workerModel: '' }), /Orchestrator: antigravity · default model\. Coder workers: claude · default model\./)
 })
 
 test('orchestration listing reports a missing orca CLI instead of throwing', async () => {
@@ -801,72 +798,49 @@ test('parseGithubRepo handles ssh and https remotes', () => {
   assert.equal(parseGithubRepo('https://gitlab.com/a/b'), null)
 })
 
-// ---- panel v3: links ----
+// ---- run links: attached to the run's workspace at start ----
 
-test('AC3: link.add drives worktree set / reference add on the focused workspace', async () => {
-  for (const [ref, args] of [
-    ['#45', ['worktree', 'set', '--worktree', 'wt-1', '--issue', '45']],
-    ['ENG-123', ['worktree', 'set', '--worktree', 'wt-1', '--linear-issue', 'ENG-123']],
-    ['https://github.com/a/b/pull/7', ['worktree', 'set', '--worktree', 'wt-1', '--pr', '7']],
-    ['https://linear.app/acme/issue/ABC-9', ['worktree', 'set', '--worktree', 'wt-1', '--linear-issue', 'https://linear.app/acme/issue/ABC-9']],
-    ['https://gitlab.com/a/b/-/merge_requests/3', ['reference', 'add', 'https://gitlab.com/a/b/-/merge_requests/3', '--worktree', 'wt-1']]
-  ]) {
-    const { deps, calls } = stubs()
-    const res = await addLink(deps, { ref })
-    assert.equal(res.ok, true, ref)
-    assert.deepEqual(calls.filter((c) => c.kind === 'exec' && c.file === ORCA).map((c) => c.args), [[...args, '--json']])
-  }
+test('run links: each kind attaches to the focused workspace after the pins; never read back from it', async () => {
+  const { deps, calls } = newWsStubs({ settings: { workerModel: 'm' } })
+  const refs = ['#45', 'ENG-123', 'https://github.com/a/b/pull/7', 'https://linear.app/acme/issue/ABC-9', 'https://gitlab.com/a/b/-/merge_requests/3']
+  const result = await startRun(deps, { goal: 'x', links: refs })
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.linkFailures, [])
+  assert.deepEqual(calls.filter((c) => c.file === ORCA && c.args[0] !== 'agent').map((c) => c.args), [
+    ['worktree', 'set', '--worktree', 'wt-1', '--issue', '45', '--json'],
+    ['worktree', 'set', '--worktree', 'wt-1', '--linear-issue', 'ENG-123', '--json'],
+    ['worktree', 'set', '--worktree', 'wt-1', '--pr', '7', '--json'],
+    ['worktree', 'set', '--worktree', 'wt-1', '--linear-issue', 'https://linear.app/acme/issue/ABC-9', '--json'],
+    ['reference', 'add', 'https://gitlab.com/a/b/-/merge_requests/3', '--worktree', 'wt-1', '--json']
+  ])
+  assert.equal(orcaArgs(calls, 'worktree', 'show').length, 0, 'the workspace links are never read: only what the person added goes in')
 })
 
-test('AC3: link.add refuses free text before touching anything, and a failing CLI surfaces its message', async () => {
-  const a = stubs()
-  const bad = await addLink(a.deps, { ref: 'fix login' })
-  assert.equal(bad.ok, false)
-  assert.equal(bad.error.code, 'unparsed_ref')
+test('run links: free text fails before anything runs; a failing attach is reported, not fatal', async () => {
+  const a = newWsStubs()
+  const bad = await startRun(a.deps, { goal: 'x', links: ['#45', 'fix login'] })
+  assert.equal(bad.error.code, 'bad_link')
+  assert.match(bad.error.message, /fix login/)
   assert.equal(a.calls.filter((c) => c.kind === 'exec').length, 0)
-  const b = stubs({ exec: async () => ({ code: 1, stdout: '', stderr: 'Linear is not connected' }) })
-  const res = await addLink(b.deps, { ref: 'ENG-123' })
-  assert.equal(res.ok, false)
-  assert.match(res.error.message, /Linear is not connected/)
-  const c = stubs()
-  c.deps.host.call = async (m) => (m === 'workspace.readContext' ? null : {})
-  assert.equal((await addLink(c.deps, { ref: '#45' })).error.code, 'no_workspace')
+  const b = newWsStubs()
+  const base = b.deps.exec
+  b.deps.exec = async (file, args, opts) => (file === ORCA && args[0] === 'worktree' ? { code: 1, stdout: '', stderr: 'Linear is not connected' } : base(file, args, opts))
+  const res = await startRun(b.deps, { goal: 'x', links: ['ENG-123'] })
+  assert.equal(res.ok, true)
+  assert.deepEqual(res.linkFailures, ['ENG-123 (Linear is not connected)'])
 })
 
-test('AC3: link.remove clears its slot with null, and a reference by URL', async () => {
-  const { deps, calls } = stubs()
-  assert.equal((await removeLink(deps, { kind: 'issue', value: '45' })).ok, true)
-  assert.equal((await removeLink(deps, { kind: 'linear', value: 'ENG-123' })).ok, true)
-  assert.equal((await removeLink(deps, { kind: 'reference', value: 'https://x/y' })).ok, true)
-  const argvs = calls.filter((c) => c.kind === 'exec' && c.file === ORCA).map((c) => c.args)
-  assert.deepEqual(argvs, [
-    ['worktree', 'set', '--worktree', 'wt-1', '--issue', 'null', '--json'],
-    ['worktree', 'set', '--worktree', 'wt-1', '--linear-issue', 'null', '--json'],
-    ['reference', 'remove', 'https://x/y', '--worktree', 'wt-1', '--json']
+test('qa pin: set with --role qa next to the coder pin; skipped without a qa model', async () => {
+  assert.deepEqual(pinArgs({ qaAgent: 'claude', qaModel: 'haiku', qaEffort: 'low' }, 'qa'), ['pin', 'set', '--agent', 'claude', '--model', 'haiku', '--role', 'qa', '--effort', 'low'])
+  assert.equal(pinArgs({ qaAgent: 'claude', qaModel: '' }, 'qa'), null)
+  const { deps, calls } = newWsStubs({ settings: { workerModel: 'sonnet', qaModel: 'haiku' } })
+  const result = await startRun(deps, { goal: 'x' })
+  assert.equal(result.pinned, true)
+  assert.deepEqual(calls.filter((c) => c.args?.[0] === 'pin').map((c) => c.args), [
+    ['pin', 'set', '--agent', 'claude', '--model', 'sonnet'],
+    ['pin', 'set', '--agent', 'claude', '--model', 'haiku', '--role', 'qa']
   ])
-  const failing = stubs({ exec: async () => ({ code: 1, stdout: '', stderr: 'workspace not found' }) })
-  assert.match((await removeLink(failing.deps, { kind: 'pr', value: '7' })).error.message, /workspace not found/)
-})
-
-test('AC4: readLinks maps worktree show linkedItems to chips', async () => {
-  const seen = []
-  const items = [
-    { provider: 'github', type: 'issue', number: 45, url: 'https://github.com/a/b/issues/45' },
-    { provider: 'github', type: 'pr', number: 7, url: 'https://github.com/a/b/pull/7' },
-    { provider: 'linear', type: 'issue', number: 0, identifier: 'ENG-123', url: 'https://linear.app/acme/issue/ENG-123' },
-    { provider: 'gitlab', type: 'mr', number: 3, url: 'https://gitlab.com/a/b/-/merge_requests/3' }
-  ]
-  const { deps } = stubs({ exec: async (file, args, opts) => (seen.push([file, ...args]), orcaOut({ worktree: { linkedItems: items } })) })
-  assert.deepEqual(await readLinks(deps, { id: 'wt-1' }), [
-    { kind: 'issue', value: '45', url: 'https://github.com/a/b/issues/45', label: '#45' },
-    { kind: 'pr', value: '7', url: 'https://github.com/a/b/pull/7', label: 'PR #7' },
-    { kind: 'linear', value: 'ENG-123', url: 'https://linear.app/acme/issue/ENG-123', label: 'ENG-123' },
-    { kind: 'reference', value: 'https://gitlab.com/a/b/-/merge_requests/3', url: 'https://gitlab.com/a/b/-/merge_requests/3', label: 'MR gitlab.com/a/b/-/merge_requests/3' }
-  ])
-  assert.deepEqual(seen, [[ORCA, 'worktree', 'show', '--worktree', 'wt-1', '--json']])
-  assert.ok(seen.every((c) => c[0] === ORCA), 'links reads never spawn a bare orca')
-  const broken = stubs({ exec: async () => ({ code: 1, stdout: '', stderr: 'no such worktree' }) })
-  await assert.rejects(() => readLinks(broken.deps, { id: 'wt-1' }))
+  assert.match(setupNote({ plannerAgent: 'claude', workerAgent: 'claude', workerModel: 'sonnet', qaAgent: 'claude', qaModel: 'haiku' }), /QA and validator workers: claude · haiku/)
 })
 
 // ---- panel v4: start run in a new workspace ----
@@ -883,6 +857,7 @@ function newWsStubs({ show, create, launch = { outcome: { kind: 'structured', ha
       if (args[0] === 'worktree' && args[1] === 'show') return show ? orcaOut(show) : { code: 1, stdout: '', stderr: 'show refused' }
       if (args[0] === 'worktree' && args[1] === 'create') return create ?? orcaOut({ worktree: { id: 'r-9::/new/ws', path: '/new/ws', displayName: 'shown' } })
       if (args[0] === 'reference') return orcaOut(addRef)
+      if (args[0] === 'worktree' && args[1] === 'set') return orcaOut({})
       if (args[0] === 'agent' && args[1] === 'launch') return orcaOut(launch)
       return { code: 0, stdout: '', stderr: '' }
     }
@@ -891,7 +866,9 @@ function newWsStubs({ show, create, launch = { outcome: { kind: 'structured', ha
   deps.storage = { get: async (k) => mem.get(k) ?? null, set: async (k, v) => void mem.set(k, v) }
   return { deps, calls, mem }
 }
-const FOCUS_ROW = { worktree: { repoId: 'r-9', linkedItems: [{ provider: 'github', type: 'issue', number: 45, url: 'u45' }, { provider: 'linear', type: 'issue', number: 0, linearIdentifier: 'ENG-123', url: 'lu' }, { provider: 'gitlab', type: 'mr', number: 3, url: 'https://gitlab.com/a/b/-/merge_requests/3' }] } }
+// the focused workspace's own links (here an observed PR) are never copied: only the run's links go in
+const FOCUS_ROW = { worktree: { repoId: 'r-9', linkedItems: [{ provider: 'github', type: 'pr', number: 2, url: 'https://github.com/a/b/pull/2', origins: [{ kind: 'observed', tabId: 't' }] }] } }
+const RUN_LINKS = ['#45', 'ENG-123', 'https://gitlab.com/a/b/-/merge_requests/3']
 const orcaArgs = (calls, ...head) => calls.filter((c) => c.file === ORCA && head.every((a, i) => c.args[i] === a)).map((c) => c.args)
 
 test('AC1: the toggle off keeps the 0.8.1 argv and step sequence exactly (no worktree show/create)', async () => {
@@ -907,7 +884,7 @@ test('AC1: the toggle off keeps the 0.8.1 argv and step sequence exactly (no wor
 
 test('AC2: the toggle on creates with the typed name, base flag, --no-parent, the focused repo id and one slot flag per link kind', async () => {
   const { deps, calls } = newWsStubs({ show: FOCUS_ROW })
-  const result = await startRun(deps, { goal: 'build the thing', newWorkspace: true, workspaceName: 'my-run', baseBranch: ' origin/main ' })
+  const result = await startRun(deps, { goal: 'build the thing', newWorkspace: true, workspaceName: 'my-run', baseBranch: ' origin/main ', links: RUN_LINKS })
   assert.equal(result.ok, true)
   assert.deepEqual(orcaArgs(calls, 'worktree', 'create'), [['worktree', 'create', '--name', 'my-run', '--repo', 'id:r-9', '--no-parent', '--base-branch', 'origin/main', '--issue', '45', '--linear-issue', 'ENG-123', '--json']])
   assert.deepEqual(orcaArgs(calls, 'reference', 'add'), [['reference', 'add', 'https://gitlab.com/a/b/-/merge_requests/3', '--worktree', 'r-9::/new/ws', '--json']])
@@ -956,7 +933,7 @@ test('AC4: a post-creation failure names the created workspace; a failed referen
   const install = newWsStubs({ show: FOCUS_ROW })
   const base = install.deps.exec
   install.deps.exec = async (file, args, opts) => (file !== ORCA && args[0] === 'install' ? { code: 3, stdout: '', stderr: 'disk full' } : base(file, args, opts))
-  const r1 = await startRun(install.deps, { goal: 'x', newWorkspace: true })
+  const r1 = await startRun(install.deps, { goal: 'x', newWorkspace: true, links: RUN_LINKS })
   assert.equal(r1.ok, false)
   assert.equal(r1.error.code, 'mte_failed')
   assert.match(r1.error.message, /^New workspace “shown” was created and stays; /)
@@ -973,7 +950,7 @@ test('AC4: a post-creation failure names the created workspace; a failed referen
   const badRef = newWsStubs({ show: FOCUS_ROW, addRef: null })
   const base3 = badRef.deps.exec
   badRef.deps.exec = async (file, args, opts) => (args[0] === 'reference' ? { code: 1, stdout: '', stderr: 'bad url' } : base3(file, args, opts))
-  const r3 = await startRun(badRef.deps, { goal: 'x', newWorkspace: true })
+  const r3 = await startRun(badRef.deps, { goal: 'x', newWorkspace: true, links: RUN_LINKS })
   assert.equal(r3.ok, true)
   assert.deepEqual(r3.linkFailures, ['https://gitlab.com/a/b/-/merge_requests/3 (bad url)'])
 })

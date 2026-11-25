@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { gatePlanner, pinFlags } from '../wiring/guard-logic.ts'
 import { getFlag, hasFlag } from '../wiring/shell-parse.ts'
 import { identityFromEnv, logGuard, readPin } from '../wiring/state.ts'
+import { pinRole } from './pin.ts'
 import { resolveWorkspaceRoot, usageError } from './flags.ts'
 import type { Command } from './flags.ts'
 
@@ -27,14 +28,18 @@ function activeWorkers(orca: string, cwd: string, ws: string): number | null {
 }
 
 /**
- * `mte dispatch --task <id> [-- <extra worker-start args>]`: `orca orchestration worker-start --task <id>` plus the
- * pin flags. Explicit extra flags win over the pin (escalation). Refuses (exit 3) while
+ * `mte dispatch --task <id> [--role qa] [-- <extra worker-start args>]`: `orca orchestration worker-start --task <id>` plus
+ * the role's pin flags (`qa` falls back to the coder pin when no qa pin is set). Explicit extra flags win over the pin (escalation). Refuses (exit 3) while
  * MTE_MAX_WORKERS (default 3) workers are already running in the Run. Exit code = orca's.
  */
 export const dispatchCommand: Command = ({ flags, cwd, rest = [] }) => {
   const task = flags.get('task')
   if (typeof task !== 'string' || task === '') {
-    return usageError('usage: mte dispatch --task <id> [-- <extra worker-start args>]')
+    return usageError('usage: mte dispatch --task <id> [--role coder|qa] [-- <extra worker-start args>]')
+  }
+  const role = pinRole(flags)
+  if (typeof role !== 'string') {
+    return usageError(role.error)
   }
   const root = resolveWorkspaceRoot(flags, cwd)
   if (typeof root !== 'string') {
@@ -67,7 +72,7 @@ export const dispatchCommand: Command = ({ flags, cwd, rest = [] }) => {
     )
     return 3
   }
-  const pin = readPin(root)
+  const pin = readPin(root, role) ?? readPin(root)
   const effectiveAgent = getFlag(rest, 'agent') ?? pin?.agent
   let pinned: string[] = []
   if (pin !== null && effectiveAgent === pin.agent) {

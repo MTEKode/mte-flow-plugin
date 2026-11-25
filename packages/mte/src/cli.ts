@@ -41,8 +41,8 @@ Usage:
   mte deploy-check config [--json]                                        show deploy-check config (never the password)
   mte deploy-check validated --summary <text> [--failed]                  report on the linked Linear issue
   mte guard --command <cmd> [--session-id <id>] [--terminal-handle <h>] [--claude-hook]   planner gate + worker pin (exit 2 = deny)
-  mte dispatch --task <id> [-- <extra worker-start args>]                 worker-start with the worker pin applied
-  mte pin set --agent <a> --model <m> [--effort <e>] | mte pin get --json
+  mte dispatch --task <id> [--role qa] [-- <extra worker-start args>]     worker-start with the role's worker pin applied
+  mte pin set --agent <a> --model <m> [--effort <e>] [--role coder|qa] | mte pin get --json [--role qa]
   mte planner claim [--force] [--session-id <id>] [--terminal-handle <h>] | mte planner show --json
   mte planner release [--workspace <path>]                                drop the planner claim (next claim needs no --force)
   mte install [--workspace <path>]                                        wire skill, Claude hook and memory MCP

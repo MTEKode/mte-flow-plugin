@@ -2,7 +2,6 @@
 // status bar item current. Nothing is kept only in memory: runs and workers are re-read from the
 // orchestration CLI on every request and poll.
 import {
-  addLink,
   checkMte,
   createPollPoster,
   defaultExec,
@@ -18,9 +17,7 @@ import {
   listOrchestrators,
   openPanel,
   readClaim,
-  readLinks,
   readSettings,
-  removeLink,
   REQUIRED_MTE_VERSION,
   resolveChoices,
   resolveOrcaCli,
@@ -32,7 +29,7 @@ import {
 
 const POLL_MS = 15_000
 let timer
-const SETTING_KEYS = ['plannerAgent', 'plannerModel', 'plannerSurface', 'plannerEffort', 'workerAgent', 'workerModel', 'workerEffort', 'mteBin']
+const SETTING_KEYS = ['plannerAgent', 'plannerModel', 'plannerSurface', 'plannerEffort', 'workerAgent', 'workerModel', 'workerEffort', 'qaAgent', 'qaModel', 'qaEffort', 'mteBin']
 const CHOICE_KEYS = SETTING_KEYS.slice(0, -1)
 let searchSeq = 0
 
@@ -110,15 +107,6 @@ export default async function activate(orca) {
       checkMte(deps, settings),
       resolveWorkspace(host).catch(() => null)
     ])
-    // chips for the Links field; a failed read never goes silent: the panel renders linksError as the hint row
-    if (workspace) {
-      try {
-        workspace.links = await readLinks(deps, workspace)
-      } catch (error) {
-        workspace.links = []
-        workspace.linksError = String(error?.message ?? error)
-      }
-    }
     // the focused workspace's planner claim: the panel warns about a conflict before Start, not after a failed one
     let claim = null
     let claimError = null
@@ -168,8 +156,6 @@ export default async function activate(orca) {
     const mine = ++searchSeq
     return searchGoal(deps, input, { isStale: () => mine !== searchSeq })
   })
-  orca.panels.handle('link.add', async (input) => afterMutation(await addLink(deps, input)))
-  orca.panels.handle('link.remove', async (input) => afterMutation(await removeLink(deps, input)))
   orca.panels.handle('workspace.install', async () => afterMutation(await installInWorkspace(deps)))
   orca.panels.handle('setup.repair', () => runSetup(true))
   // "Not now": the needs-consent prompt is remembered as declined for this required version; Repair setup still runs it

@@ -84,9 +84,6 @@ export function listKey(index, n, key) {
   return { index: moveIndex(index, n, key), action: null }
 }
 
-/** What selecting a suggestion writes into the goal: "<id> <title>" plus the URL. */
-export const goalText = (item) => `${item.id} ${item.title}\n${item.url}`
-
 /**
  * Direct parse of the links input; null when the text is search material instead.
  * `#45` -> GitHub issue, `ENG-123` -> Linear, a github.com PR/issue URL -> pr/issue,
@@ -113,18 +110,16 @@ export function parseRef(text) {
   return null
 }
 
-/** Chips for the links field: `worktree show`'s linkedItems (WorkspaceAttachment[]). kind/value choose the remove call. */
-export function linksFromItems(items) {
-  return (items ?? []).map((it) => {
-    const id = it.identifier ?? it.linearIdentifier ?? it.jiraIdentifier
-    if (it.provider === 'github' && (it.type === 'issue' || it.type === 'pr')) {
-      return { kind: it.type, value: String(it.number), url: it.url ?? '', label: it.type === 'pr' ? `PR #${it.number}` : `#${it.number}` }
-    }
-    if (it.provider === 'linear' && id) return { kind: 'linear', value: String(id), url: it.url ?? '', label: String(id) }
-    const bare = String(it.url ?? '').replace(/^https?:\/\/(?:www\.)?/, '').replace(/[?#].*$/, '').replace(/\/+$/, '')
-    const label = id ?? (bare || `${it.provider}:${it.type}:${it.number}`)
-    return { kind: 'reference', value: it.url ?? '', url: it.url ?? '', label: it.type === 'mr' ? `MR ${label}` : `Link ${label}` }
-  })
+/**
+ * The run's chip list with `ref` added: null when `ref` is not an identifier or URL, the same list when it is already
+ * there. `id` (a suggestion's `ENG-123` / `#45`) labels the chip; otherwise the typed text does, minus the scheme.
+ */
+export function addLink(list, ref, id) {
+  const parsed = parseRef(ref)
+  if (!parsed) return null
+  if (list.some((l) => l.kind === parsed.kind && l.value === parsed.value)) return list
+  const label = id || (parsed.kind === 'pr' ? `PR #${parsed.value}` : parsed.kind === 'issue' ? `#${parsed.value}` : String(ref).trim().replace(/^https?:\/\/(?:www\.)?/i, ''))
+  return [...list, { ref: String(ref).trim(), kind: parsed.kind, value: parsed.value, label }]
 }
 
 /** Char cap of the launched prompt (worker/lib.mjs PROMPT_MAX; the panel frame cannot import it). */

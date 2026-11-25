@@ -5,6 +5,9 @@ import { join, resolve } from 'node:path'
 /** Who is calling: Orca session id (native chat) and/or terminal handle (terminal agents). */
 export type Identity = { sessionId?: string; terminalHandle?: string }
 export type WorkerPin = { agent: string; model: string; effort?: string }
+/** Which worker a pin applies to: `coder` (also the fallback for every other worker) or `qa` (validator and QA workers). */
+export type PinRole = 'coder' | 'qa'
+export const PIN_ROLES: readonly PinRole[] = ['coder', 'qa']
 export type PlannerClaim = Identity & { claimedAt: string }
 
 export const MTE_DIR = '.mte'
@@ -51,7 +54,7 @@ export function describeIdentity(identity: Identity): string {
     .join(' / ')
 }
 
-const pinPath = (ws: string): string => join(ws, MTE_DIR, 'worker-pin.json')
+const pinPath = (ws: string, role: PinRole = 'coder'): string => join(ws, MTE_DIR, role === 'coder' ? 'worker-pin.json' : `worker-pin-${role}.json`)
 const legacyPlannerPath = (ws: string): string => join(ws, MTE_DIR, 'planner.json')
 
 /** Absolute `git rev-parse --git-common-dir` of `ws` (shared by every worktree of a repo), or null outside git. */
@@ -111,8 +114,8 @@ function writeJsonFile(path: string, value: unknown): void {
 const optString = (value: unknown): string | undefined =>
   typeof value === 'string' && value !== '' ? value : undefined
 
-export function readPin(ws: string): WorkerPin | null {
-  const raw = readJsonFile(pinPath(ws))
+export function readPin(ws: string, role: PinRole = 'coder'): WorkerPin | null {
+  const raw = readJsonFile(pinPath(ws, role))
   const agent = optString(raw?.agent)
   const model = optString(raw?.model)
   if (agent === undefined || model === undefined) {
@@ -122,9 +125,9 @@ export function readPin(ws: string): WorkerPin | null {
   return { agent, model, ...(effort ? { effort } : {}) }
 }
 
-export function writePin(ws: string, pin: WorkerPin): WorkerPin {
+export function writePin(ws: string, pin: WorkerPin, role: PinRole = 'coder'): WorkerPin {
   const clean: WorkerPin = { agent: pin.agent, model: pin.model, ...(pin.effort ? { effort: pin.effort } : {}) }
-  writeJsonFile(pinPath(ws), clean)
+  writeJsonFile(pinPath(ws, role), clean)
   return clean
 }
 
