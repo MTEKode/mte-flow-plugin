@@ -204,3 +204,11 @@ test('AC3: the panel and worker wire link.add/link.remove, errors surfacing as t
   assert.match(main, /panels\.handle\('link.add'/)
   assert.match(main, /panels\.handle\('link.remove'/)
 })
+
+test('AC4: a failed links read is never silent: the worker stores linksError and the panel renders it as the hint', async () => {
+  const main = await readFile(new URL('../worker/main.mjs', import.meta.url), 'utf8')
+  assert.match(main, /catch \(error\) \{[\s\S]*?links = \[\][\s\S]*?linksError/)
+  assert.ok(!main.includes('.catch(() => [])'), 'snapshot must not swallow the readLinks failure')
+  const js = await readFile(new URL('../panel/panel.js', import.meta.url), 'utf8')
+  assert.match(js, /linksError.*setLinkHint/s)
+})

@@ -881,7 +881,9 @@ export async function searchGoal(deps, { q }, { isStale = () => false } = {}) {
 // ---- panel links: link/unlink issues and PRs on the focused workspace ----
 
 const LINK_FLAGS = { issue: '--issue', pr: '--pr', linear: '--linear-issue' }
-const worktreeTarget = (ws) => ['--worktree', `id:${ws.id}`]
+// host workspace ids already carry their selector shape (`identity:wt2:local:<uuid>`, folders `folder:<id>`);
+// prefixing `id:` is what the CLI reads as <repo>::<path> and fails with selector_not_found (live-probed)
+const worktreeTarget = (ws) => ['--worktree', String(ws.id)]
 
 /** argv that links a parsed ref: GitHub/Linear go through their `worktree set` slot, any other URL through `orca reference add`. */
 export function linkAddArgs(ws, ref) {

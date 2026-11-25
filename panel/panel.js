@@ -299,6 +299,7 @@ function render() {
   const version = s ? mteRow(s.mte) : null
   $('ws').textContent = (s?.workspace ? `Workspace: ${s.workspace.name} · ${s.workspace.path}` : 'No workspace focused.') + (version ? ` · ${version}` : '')
   const chips = s?.workspace?.links ?? []
+  if (s?.workspace?.linksError) setLinkHint(`Could not read the workspace links: ${s.workspace.linksError}`)
   const chipBox = $('chips')
   chipBox.hidden = chips.length === 0
   chipBox.replaceChildren(

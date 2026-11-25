@@ -110,8 +110,15 @@ export default async function activate(orca) {
       checkMte(deps, settings),
       resolveWorkspace(host).catch(() => null)
     ])
-    // chips for the Links field; a failed read shows none (add/remove errors still surface in the panel hint)
-    if (workspace) workspace.links = await readLinks(deps, workspace).catch(() => [])
+    // chips for the Links field; a failed read never goes silent: the panel renders linksError as the hint row
+    if (workspace) {
+      try {
+        workspace.links = await readLinks(deps, workspace)
+      } catch (error) {
+        workspace.links = []
+        workspace.linksError = String(error?.message ?? error)
+      }
+    }
     // the focused workspace's planner claim: the panel warns about a conflict before Start, not after a failed one
     let claim = null
     let claimError = null
