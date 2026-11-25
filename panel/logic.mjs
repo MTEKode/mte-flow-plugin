@@ -87,6 +87,48 @@ export function listKey(index, n, key) {
 /** What selecting a suggestion writes into the goal: "<id> <title>" plus the URL. */
 export const goalText = (item) => `${item.id} ${item.title}\n${item.url}`
 
+/** Char cap of the launched prompt (worker/lib.mjs PROMPT_MAX; the panel frame cannot import it). */
+export const PROMPT_CAP = 4000
+
+/** One-line outcome after a start: where it opened, what a launcher fallback dropped, whether the goal was cut. */
+export function startNote(r) {
+  const where = r.surface === 'chat' ? 'a native chat' : 'a new terminal'
+  const fb = r.dropped?.length
+    ? ` (the orca CLI was unavailable: dropped ${r.dropped.join(', ')})`
+    : r.fallback
+      ? ' (chat was unavailable, fell back to a terminal)'
+      : ''
+  return `${r.replacedStale ? 'The previous planner was closed, so its claim was dropped. ' : ''}Planner started in ${where}${fb}${r.truncated ? `; goal truncated to fit the ${PROMPT_CAP}-char prompt cap` : ''}.`
+}
+
+/** The planner-claim callout: a live foreign claim warns before Start (Replace offered); a corrupt claim only reports. */
+export function claimCallout(snap, heldBy = null) {
+  if (snap?.claimError) {
+    return { tone: 'danger', title: 'Could not read the planner claim', body: snap.claimError }
+  }
+  if (snap?.claim?.claimed && !snap.claim.mine) {
+    return { tone: '', title: 'A planner is already running here', body: `Held by ${snap.claim.holder}. Replacing it cuts that planner off from dispatching workers.`, replace: true }
+  }
+  if (heldBy) {
+    return { tone: '', title: 'A planner is already running here', body: `Held by ${heldBy}. Replacing it cuts that planner off from dispatching workers.`, replace: true }
+  }
+  return null
+}
+
+/** Hint lines for failed harness/model listings (the goal.search hint pattern: muted text, never a silent empty list). */
+export function listHints({ harnessError, models }) {
+  const hints = []
+  if (harnessError) {
+    hints.push(`Could not list the installed harnesses (${harnessError}); claude and antigravity stay selectable.`)
+  }
+  for (const [agent, info] of Object.entries(models ?? {})) {
+    if (info?.error) {
+      hints.push(`Could not list ${agent} models (${info.error}); type a model id instead.`)
+    }
+  }
+  return hints
+}
+
 /**
  * Debounced, stale-safe search. `input(q)` schedules a request after `delay` ms; any older request that resolves
  * after a newer one was issued is dropped. Timers are injectable for tests.

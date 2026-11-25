@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
-import { createSearcher, filterRows, fitSelection, goalText, groupRows, iconFor, listKey, modelRows, moveIndex, originIcon } from '../panel/logic.mjs'
+import { claimCallout, createSearcher, filterRows, fitSelection, goalText, groupRows, iconFor, listHints, listKey, modelRows, moveIndex, originIcon, startNote } from '../panel/logic.mjs'
 
 test('model rows: default first, labels when the CLI gives them, an unlisted current model stays', () => {
   const info = { models: [{ id: 'gemini-x-high', label: 'Gemini X (High)' }, { id: 'p/m' }] }
@@ -90,4 +90,51 @@ test('AC3: the panel only uses --orca-* colors (no hard-coded hex)', async () =>
     const bare = text.replace(/var\([^()]*(?:\([^()]*\)[^()]*)*\)/g, '')
     assert.ok(!/\b(?:rgba?|hsla?)\(/i.test(bare), `${f} has a color function literal`)
   }
+})
+
+test('AC1: the panel keeps no poller of its own — the worker posts state.changed', async () => {
+  const text = await readFile(new URL('../panel/panel.js', import.meta.url), 'utf8')
+  assert.ok(!text.includes('setInterval'), 'panel.js must not poll; the worker notifies it')
+})
+
+test('AC10: the goal combobox announces the highlighted option; model options get ids too', async () => {
+  const text = await readFile(new URL('../panel/panel.js', import.meta.url), 'utf8')
+  assert.match(text, /goal\.setAttribute\('aria-activedescendant', items\.length \? `go-\$\{gi\}` : ''\)/)
+  assert.match(text, /input\.setAttribute\('aria-activedescendant'/)
+  assert.match(text, /id: `go-\$\{i\}`/)
+  assert.match(text, /id: `mo-\$\{pid\}-\$\{i\}`/)
+})
+
+test('AC5: a live foreign claim shows the conflict callout before Start; own claims stay quiet; corrupt ones report', () => {
+  const conflict = claimCallout({ claim: { claimed: true, holder: 'session s9' } })
+  assert.deepEqual([conflict.tone, conflict.title, conflict.replace, conflict.body.includes('session s9')], ['', 'A planner is already running here', true, true])
+  assert.equal(claimCallout({ claim: { claimed: true, holder: 'session s9', mine: true } }), null)
+  assert.equal(claimCallout({ claim: { claimed: false } }), null)
+  const corrupt = claimCallout({ claimError: '`mte planner show` failed (exited with 1): claim file is corrupt; run `mte planner release`' })
+  assert.equal(corrupt.tone, 'danger')
+  assert.equal(corrupt.replace, undefined)
+  assert.match(corrupt.body, /corrupt/)
+  assert.match(claimCallout(null, 'terminal term_1').body, /terminal term_1/)
+})
+
+test('AC8: the fallback note names exactly the selections the host launcher dropped', () => {
+  const plain = startNote({ surface: 'terminal' })
+  assert.equal(plain, 'Planner started in a new terminal.')
+  const dropped = startNote({ surface: 'terminal', fallback: true, dropped: ['model opus', 'effort high', 'chat surface'] })
+  assert.match(dropped, /the orca CLI was unavailable: dropped model opus, effort high, chat surface/)
+  const chat = startNote({ surface: 'chat', fallback: false, dropped: [] })
+  assert.equal(chat, 'Planner started in a native chat.')
+})
+
+test('AC9: the truncation note states the real 4000-char cap', () => {
+  assert.match(startNote({ surface: 'chat', truncated: true }), /truncated to fit the 4000-char prompt cap/)
+  assert.ok(!startNote({ surface: 'chat', truncated: true }).includes('4096'))
+})
+
+test('AC3: failed harness/model listings become hint lines (goal.search hint pattern)', () => {
+  assert.deepEqual(listHints({ harnessError: 'orca CLI missing', models: { antigravity: { error: 'agy: offline' } } }), [
+    'Could not list the installed harnesses (orca CLI missing); claude and antigravity stay selectable.',
+    'Could not list antigravity models (agy: offline); type a model id instead.'
+  ])
+  assert.deepEqual(listHints({ harnessError: null, models: { claude: { models: [], error: null } } }), [])
 })

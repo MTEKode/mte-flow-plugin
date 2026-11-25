@@ -4,8 +4,10 @@ import {
   buildBootstrapPrompt,
   checkMte,
   compareVersions,
+  createPollPoster,
   dismissDepthReminder,
   ensureSetup,
+  harnessList,
   isDepthReminderDismissed,
   REQUIRED_MTE_VERSION,
   tarballUrl,
@@ -16,6 +18,8 @@ import {
   listModels,
   listOrchestration,
   listOrchestrators,
+  readClaim,
+  resolveChoices,
   setupNote,
   parseGithubRepo,
   resolveOrcaCli,
@@ -226,8 +230,27 @@ test('orchestration listing keeps only running workers: finished, exited and dea
   assert.equal(listing.error, null)
   assert.deepEqual(listing.workers.map((w) => [w.dispatchId, w.runId, w.state, w.workspace]), [['d1', 'run_1', 'ready', 'r::/repo/wt']])
   assert.ok(seen.find((a) => a.includes('worker-list')).join(' ').includes('--terminal-state active'))
-  assert.deepEqual(statusText(listing.workers), { n: 1, text: 'MTE 1', tone: 'accent' })
+  assert.deepEqual(statusText(listing.workers), { n: 1, text: 'MTE 1', tone: 'accent', attention: 0 })
   assert.equal(statusText([]).text, 'MTE')
+})
+
+test('AC2: active workers needing attention turn the status tone to warning', () => {
+  const w = (attention) => ({ dispatchId: 'd', taskId: 't', runId: 'r', state: 'ready', activity: 'unknown', outcome: 'in_progress', liveness: 'alive', workspace: 'r::/p', attention })
+  assert.deepEqual(statusText([w(true), w(false), w(true)]), { n: 3, text: 'MTE 3', tone: 'warning', attention: 2 })
+  assert.deepEqual(statusText([w(false)]), { n: 1, text: 'MTE 1', tone: 'accent', attention: 0 })
+  assert.deepEqual(statusText([]), { n: 0, text: 'MTE', tone: 'neutral', attention: 0 })
+})
+
+test('AC1: the poll poster posts state.changed only when the observable state changed', () => {
+  const posts = []
+  const post = createPollPoster(() => posts.push(1))
+  const state = [[{ dispatchId: 'd1' }], { status: 'idle', message: '' }, 'MTE 1', 'accent', null]
+  assert.equal(post(state), true)
+  assert.equal(post(JSON.parse(JSON.stringify(state))), false)
+  assert.equal(post(state), false)
+  assert.equal(posts.length, 1)
+  assert.equal(post([[{ dispatchId: 'd1' }, { dispatchId: 'd2' }], { status: 'idle', message: '' }, 'MTE 2', 'accent', null]), true)
+  assert.equal(posts.length, 2)
 })
 
 test('orchestrators: workers are grouped under their run and tied to the planner that started it; a planner without workers still shows; closed planners are forgotten', async () => {
@@ -404,6 +427,54 @@ test('checkMte: a non-zero --version exit is unusable, with the stderr first lin
   assert.deepEqual(await checkMte({ exec: async () => ({ code: 0, stdout: '0.3.0', stderr: '' }) }, { mteBin: 'mte' }), { missing: false })
 })
 
+test('AC4: a checkMte failure that is not ENOENT is reported, never silently healthy', async () => {
+  const res = await checkMte({ exec: async () => { throw new Error('spawn mte EPERM') } }, { mteBin: 'mte' })
+  assert.equal(res.missing, true)
+  assert.equal(res.unusable, true)
+  assert.match(res.message, /EPERM/)
+  assert.match(res.message, /npm i -g/)
+})
+
+test('AC3: harness.list reports a failed listing instead of swallowing it', async () => {
+  const gone = { exec: async () => { throw Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }) }, orcaCli: { bin: 'orca', env: {} } }
+  const res = await harnessList(gone)
+  assert.deepEqual(res.harnesses, [])
+  assert.match(res.error, /orca CLI/)
+  const { deps } = stubs({ exec: async () => orcaOut({ agents: [{ id: 'claude', name: 'Claude', default: true }] }) })
+  assert.deepEqual(await harnessList(deps), { harnesses: [{ id: 'claude', name: 'Claude', default: true }], error: null })
+})
+
+test('AC3: a failed models probe surfaces as error', async () => {
+  const { deps } = stubs({ exec: async () => ({ code: 1, stdout: '', stderr: 'agy: account offline\nnoise' }) })
+  const res = await listModels(deps, { agent: 'antigravity' })
+  assert.deepEqual(res.models, [])
+  assert.match(res.error, /account offline/)
+  const enoent = stubs({ exec: async () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) } })
+  assert.match((await listModels(enoent.deps, { agent: 'antigravity' })).error, /not on PATH/)
+})
+
+test('AC5: readClaim reports a corrupt claim as an actionable error (T-0004 exit)', async () => {
+  const { deps } = stubs({ exec: async () => ({ code: 1, stdout: '', stderr: 'mte: claim file .mte/planner.json is corrupt: expected \'{\'; run `mte planner release` to clear it' }) })
+  const res = await readClaim(deps, { mteBin: 'mte' }, '/repo/feat')
+  assert.equal(res.ok, false)
+  assert.equal(res.error.code, 'mte_failed')
+  assert.match(res.error.message, /corrupt/)
+})
+
+test('AC6: a settings change re-seeds the choices; unchanged settings keep stored overrides', async () => {
+  const mem = new Map()
+  const storage = { get: async (k) => mem.get(k) ?? null, set: async (k, v) => void mem.set(k, v) }
+  const s1 = { plannerAgent: 'claude', workerModel: 'sonnet' }
+  assert.deepEqual(await resolveChoices(storage, s1), {})
+  assert.deepEqual(mem.get('settingsSeed'), s1)
+  await storage.set('choices', { plannerAgent: 'antigravity' })
+  assert.deepEqual(await resolveChoices(storage, s1), { plannerAgent: 'antigravity' })
+  const s2 = { ...s1, workerModel: 'opus' }
+  assert.deepEqual(await resolveChoices(storage, s2), {})
+  assert.deepEqual(mem.get('settingsSeed'), s2)
+  assert.deepEqual(mem.get('choices'), {})
+})
+
 // ---- first-run setup ----
 
 const TARBALL = 'https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v0.3.0/mtekode-mte-0.3.0.tgz'
@@ -452,7 +523,7 @@ test('REQUIRED_MTE_VERSION and tarball URL', () => {
 
 test('setup: mte missing -> npm i -g <exact tarball>, then mte install --user, then remembered', async () => {
   const { deps, calls, storage } = setupStubs({ mte: null })
-  const res = await ensureSetup(deps)
+  const res = await ensureSetup(deps, { force: true })
   assert.deepEqual([res.ok, res.installed], [true, true])
   assert.deepEqual(npmInstalls(calls).map((c) => c.args), [['i', '-g', TARBALL]])
   assert.deepEqual(calls.filter((c) => c.args?.[0] === 'install').map((c) => c.args), [['install', '--user']])
@@ -462,7 +533,7 @@ test('setup: mte missing -> npm i -g <exact tarball>, then mte install --user, t
 
 test('setup: older mte -> same install; current mte -> no npm install but still installs the user skill', async () => {
   const old = setupStubs({ mte: '0.2.0' })
-  assert.equal((await ensureSetup(old.deps)).installed, true)
+  assert.equal((await ensureSetup(old.deps, { force: true })).installed, true)
   assert.deepEqual(npmInstalls(old.calls).map((c) => c.args), [['i', '-g', TARBALL]])
 
   const current = setupStubs({ mte: '0.3.0' })
@@ -475,7 +546,7 @@ test('setup: older mte -> same install; current mte -> no npm install but still 
 test('setup: node < 24, node missing or npm missing -> error and no npm install', async () => {
   for (const [opts, code] of [[{ node: 'v22.11.0' }, 'node_old'], [{ node: null }, 'node_missing'], [{ npm: null }, 'npm_missing']]) {
     const { deps, calls, storage } = setupStubs({ mte: null, ...opts })
-    const res = await ensureSetup(deps)
+    const res = await ensureSetup(deps, { force: true })
     assert.equal(res.ok, false)
     assert.equal(res.error.code, code)
     assert.match(res.error.message, /Node|npm/)
@@ -486,7 +557,7 @@ test('setup: node < 24, node missing or npm missing -> error and no npm install'
 
 test('setup: a failing npm surfaces its error text, mentions no sudo retry and is not remembered', async () => {
   const { deps, calls, storage } = setupStubs({ mte: null, npmInstall: { code: 243, stderr: 'npm error code EACCES\nnpm error path /usr/local/lib' } })
-  const res = await ensureSetup(deps)
+  const res = await ensureSetup(deps, { force: true })
   assert.equal(res.error.code, 'npm_failed')
   assert.match(res.error.message, /EACCES/)
   assert.match(res.error.message, /never use sudo/)
@@ -497,7 +568,7 @@ test('setup: a failing npm surfaces its error text, mentions no sudo retry and i
 
 test('setup runs once per mte version; force (Repair setup) runs it again', async () => {
   const { deps, calls } = setupStubs({ mte: null })
-  assert.equal((await ensureSetup(deps)).ok, true)
+  assert.equal((await ensureSetup(deps, { force: true })).ok, true)
   const after = calls.length
   const again = await ensureSetup(deps)
   assert.deepEqual([again.ok, again.skipped], [true, true])
@@ -508,6 +579,23 @@ test('setup runs once per mte version; force (Repair setup) runs it again', asyn
   // a different stored version does not count
   const other = setupStubs({ mte: '0.3.0', storage: new Map([['setup:0.2.0', { at: 'x' }]]) })
   assert.equal((await ensureSetup(other.deps)).skipped, undefined)
+})
+
+test('AC7: activation never runs npm unattended: needs-consent, a dismissal stays silent, force (Run/Repair setup) installs', async () => {
+  const ask = setupStubs({ mte: null })
+  const res = await ensureSetup(ask.deps)
+  assert.deepEqual([res.ok, res.needsConsent], [true, true])
+  assert.match(res.message, /npm i -g/)
+  assert.match(res.message, /Run setup/)
+  assert.equal(npmInstalls(ask.calls).length, 0)
+  assert.equal(ask.storage.size, 0)
+  const declined = setupStubs({ mte: null, storage: new Map([['setupDeclined', { version: REQUIRED_MTE_VERSION }]]) })
+  const d = await ensureSetup(declined.deps)
+  assert.deepEqual([d.ok, d.needsConsent, d.declined], [true, undefined, true])
+  assert.equal(npmInstalls(declined.calls).length, 0)
+  const forced = setupStubs({ mte: null })
+  assert.equal((await ensureSetup(forced.deps, { force: true })).ok, true)
+  assert.equal(npmInstalls(forced.calls).length, 1)
 })
 
 test('depth reminder dismissal is stored', async () => {
@@ -527,6 +615,15 @@ test('manifest defaults: claude planner, claude worker, sonnet model, no effort;
   assert.equal(manifest.version, '0.7.0')
   assert.equal(manifest.contributes.panels[0].ui, 'html')
   assert.equal(defaults.plannerSurface, 'chat')
+})
+
+test('AC11: mte.startRun is gone from the manifest and the worker; mte.openPanel remains', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const manifest = JSON.parse(await readFile(new URL('../orca-plugin.json', import.meta.url), 'utf8'))
+  assert.deepEqual(manifest.contributes.commands.map((c) => c.id), ['mte.install', 'mte.openPanel'])
+  const main = await readFile(new URL('../worker/main.mjs', import.meta.url), 'utf8')
+  assert.ok(!main.includes('mte.startRun'), 'worker still references mte.startRun')
+  assert.match(main, /commands\.register\('mte\.openPanel'/)
 })
 
 // ---- panel v2 ----

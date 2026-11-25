@@ -265,7 +265,7 @@ export function describeClaim(claim) {
 }
 
 /** `mte planner show --json`: { claimed: false } or the claim; a result error when it cannot be read. */
-async function readClaim(deps, settings, cwd) {
+export async function readClaim(deps, settings, cwd) {
   let res
   try {
     res = await deps.exec(settings.mteBin, ['planner', 'show', '--json'], { cwd })
@@ -409,14 +409,25 @@ async function launchPlanner(deps, ws, settings, prompt) {
     // real Orca reports a chat session as kind 'structured' (handle `structured-agent-session-<uuid>`)
     const kind = result.outcome.kind
     const surface = kind === 'structured' || kind === 'chat' ? 'chat' : kind === 'terminal' ? 'terminal' : settings.plannerSurface
-    return { terminalId: handle, sessionId: result.outcome.sessionId, surface, fallback: surface !== settings.plannerSurface }
+    return { terminalId: handle, sessionId: result.outcome.sessionId, surface, fallback: surface !== settings.plannerSurface, dropped: [] }
   } catch (error) {
     if (error?.code !== 'orca_missing') {
       throw error
     }
   }
+  // the host launcher only takes agent+prompt: name what the panel's selection loses to this fallback
+  const dropped = []
+  if (settings.plannerModel) {
+    dropped.push(`model ${settings.plannerModel}`)
+    if (settings.plannerEffort && effortsFor(settings.plannerAgent).length) {
+      dropped.push(`effort ${settings.plannerEffort}`)
+    }
+  }
+  if (settings.plannerSurface !== 'terminal') {
+    dropped.push(`${settings.plannerSurface} surface`)
+  }
   const { terminalId } = await deps.host.call('agent.launch', { workspaceId: ws.id, agent: settings.plannerAgent, prompt })
-  return { terminalId, surface: 'terminal', fallback: settings.plannerSurface !== 'terminal' }
+  return { terminalId, surface: 'terminal', fallback: settings.plannerSurface !== 'terminal', dropped }
 }
 
 /** `mte` usable? ENOENT means missing; a non-zero `--version` exit (e.g. a global npm install that Node cannot type-strip) means unusable. */
@@ -436,7 +447,8 @@ export async function checkMte(deps, settings) {
     if (error && error.code === 'ENOENT') {
       return { missing: true, message: mteMissingError(settings.mteBin).message }
     }
-    return { missing: false }
+    // a check that could not run is not a passing one: never report mte healthy on a swallowed error
+    return { missing: true, unusable: true, message: `\`${settings.mteBin} --version\` could not run: ${String(error?.message ?? error)}. Install it: ${INSTALL_HINT}.` }
   }
 }
 
@@ -591,9 +603,11 @@ export async function openPanel(deps) {
   return { ok: true, fallback: true }
 }
 
+/** Status-bar text; `warning` when any active worker needs attention (the tooltip names how many). */
 export const statusText = (workers) => {
   const n = workers.length
-  return { n, text: n > 0 ? `MTE ${n}` : 'MTE', tone: n > 0 ? 'accent' : 'neutral' }
+  const attention = workers.filter((w) => w.attention).length
+  return { n, text: n > 0 ? `MTE ${n}` : 'MTE', tone: n > 0 ? (attention ? 'warning' : 'accent') : 'neutral', attention }
 }
 
 /** Numeric `x.y.z` of a version string (`mte --version` prints just that); null when it is not one. */
@@ -616,6 +630,42 @@ export function compareVersions(a, b) {
 
 const setupKey = (version) => `setup:${version}`
 const DEPTH_REMINDER_KEY = 'depthReminderDismissed'
+const CONSENT_KEY = 'setupDeclined'
+const SEED_KEY = 'settingsSeed'
+
+/**
+ * Single-poller helper: posts (the panel's `state.changed` reload) only when the serialized observable
+ * state differs from what was posted last — workers, setup and the status text/tone.
+ */
+export function createPollPoster(post) {
+  let last = null
+  return (state) => {
+    const key = JSON.stringify(state)
+    if (key === last) {
+      return false
+    }
+    last = key
+    post()
+    return true
+  }
+}
+
+/**
+ * Panel choices: stored selections beat the settings, but a settings change makes every stored override
+ * stale — re-seed (drop them). First run: the seed is remembered and the settings win.
+ */
+export async function resolveChoices(storage, settings) {
+  const seed = await storage.get(SEED_KEY)
+  if (seed && JSON.stringify(seed) !== JSON.stringify(settings)) {
+    await storage.set(SEED_KEY, settings)
+    await storage.set('choices', {})
+    return {}
+  }
+  if (!seed) {
+    await storage.set(SEED_KEY, settings)
+  }
+  return (await storage.get('choices')) ?? {}
+}
 
 /** Runs `file args`; ENOENT comes back as `{ missing: true }` instead of throwing. */
 async function tryExec(deps, file, args, opts) {
@@ -647,6 +697,14 @@ export async function ensureSetup(deps, { force = false } = {}) {
   let current = await tryExec(deps, settings.mteBin, ['--version'], { timeoutMs: 15_000 })
   let installed = false
   if (current.missing || current.code !== 0 || compareVersions(current.stdout, required) < 0) {
+    // `npm i -g` changes the machine globally: never unattended. Activation reports needs-consent instead;
+    // Run setup and Repair setup call this with force, which is the consent itself. "Not now" (dismiss) stays until then.
+    if (!force) {
+      if ((await deps.storage.get(CONSENT_KEY))?.version === required) {
+        return { ok: true, declined: true, version: required }
+      }
+      return { ok: true, needsConsent: true, version: required, message: `mte ${required} is missing or too old. Installing it runs \`npm i -g\` (a global change) — press Run setup to allow it, or install it yourself: ${INSTALL_HINT}.` }
+    }
     const node = await tryExec(deps, 'node', ['--version'], { timeoutMs: 15_000 })
     const major = parseVersion(node.stdout)?.[0]
     if (node.missing || node.code !== 0 || major === undefined) {
@@ -694,6 +752,15 @@ export async function listHarnesses(deps) {
   return (res.agents ?? []).filter((a) => HARNESSES.includes(a.id)).map((a) => ({ id: a.id, name: a.name ?? a.id, default: Boolean(a.default) }))
 }
 
+/** `harness.list` response: a failed listing surfaces as `error` (the panel hints), never as a silent empty list. */
+export async function harnessList(deps) {
+  try {
+    return { harnesses: await listHarnesses(deps), error: null }
+  } catch (error) {
+    return { harnesses: [], error: String(error?.message ?? error) }
+  }
+}
+
 // No stock API lists models: seed the stable ids and always let the person type one.
 export const MODEL_SEEDS = {
   claude: ['fable', 'opus', 'sonnet', 'haiku']
@@ -723,9 +790,10 @@ export function readExtraModels(deps, agent) {
   }
 }
 
-/** Models + effort values for one harness; probed lists are cached in plugin storage. */
+/** Models + effort values for one harness; probed lists are cached in plugin storage. A failed probe comes back as `error`, not silent emptiness. */
 export async function listModels(deps, { agent }) {
   let models = (MODEL_SEEDS[agent] ?? []).map((id) => ({ id }))
+  let error = null
   const probe = MODEL_PROBES[agent]
   if (probe) {
     const key = `models:${agent}`
@@ -734,14 +802,18 @@ export async function listModels(deps, { agent }) {
       models = cached.models
     } else {
       const res = await tryExec(deps, probe.file, probe.args, { timeoutMs: 30_000 })
-      models = res.code === 0 ? probe.parse(res.stdout) : []
+      if (res.code === 0) {
+        models = probe.parse(res.stdout)
+      } else {
+        error = res.missing ? `\`${probe.file}\` is not on PATH` : firstLine(res) || `${probe.file} ${probe.args.join(' ')} failed`
+      }
       if (models.length) {
         await deps.storage?.set(key, { at: Date.now(), models })
       }
     }
   }
   const extra = readExtraModels(deps, agent).filter((id) => !models.some((m) => m.id === id))
-  return { models: [...models, ...extra.map((id) => ({ id }))], efforts: effortsFor(agent) }
+  return { models: [...models, ...extra.map((id) => ({ id }))], efforts: effortsFor(agent), error }
 }
 
 /** `owner/repo` of a GitHub remote url (https or ssh), else null. */

@@ -22,11 +22,6 @@
     ],
     "commands": [
       {
-        "id": "mte.startRun",
-        "title": "MTE: Start run",
-        "when": "workspace"
-      },
-      {
         "id": "mte.install",
         "title": "MTE: Install in workspace",
         "when": "workspace"
