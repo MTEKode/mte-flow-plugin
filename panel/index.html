@@ -70,6 +70,9 @@
   .empty { border: 1px solid var(--orca-border); border-radius: 6px; padding: 7px 10px; }
   .worker { padding: 6px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .badge { font-size: 11px; border-radius: 999px; background: var(--orca-primary); color: var(--orca-primary-foreground); padding: 1px 8px; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; border: 1px solid var(--orca-border); border-radius: 999px; padding: 2px 4px 2px 8px; font-size: 12px; }
+  .chip > .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip button { flex: none; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 999px; line-height: 1; }
   code { font-family: ui-monospace, monospace; font-size: 12px; }
   [hidden] { display: none !important; }
 </style>
@@ -86,12 +89,25 @@
     <div class="muted" id="goal-hint" hidden></div>
   </div>
 
-  <div class="field" id="f-planner">
-    <span class="label">Orchestrator</span>
+  <div class="field">
+    <label for="links">Links</label>
+    <input id="links" placeholder="Add by identifier or URL: ENG-123, #45, https://…" role="combobox" aria-expanded="false" aria-controls="links-list" aria-autocomplete="list" autocomplete="off">
+    <div class="pop" id="links-list" role="listbox" hidden></div>
+    <div class="row" id="chips" style="gap:6px;flex-wrap:wrap" hidden></div>
+    <div class="muted" id="links-hint" hidden></div>
   </div>
-  <div class="field" id="f-worker">
-    <span class="label">Workers <span class="muted">(always terminal)</span></span>
-  </div>
+
+  <details id="advanced" class="run">
+    <summary>Advanced</summary>
+    <div class="stack" style="gap:12px;padding:2px 10px 12px">
+      <div class="field" id="f-planner">
+        <span class="label">Orchestrator</span>
+      </div>
+      <div class="field" id="f-worker">
+        <span class="label">Workers <span class="muted">(always terminal)</span></span>
+      </div>
+    </div>
+  </details>
 
   <div class="row actions">
     <button type="button" class="primary" id="start">Start run</button>

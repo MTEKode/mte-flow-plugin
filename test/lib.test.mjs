@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  addLink,
   buildBootstrapPrompt,
   checkMte,
   compareVersions,
@@ -22,6 +23,8 @@ import {
   resolveChoices,
   setupNote,
   parseGithubRepo,
+  readLinks,
+  removeLink,
   resolveOrcaCli,
   searchGoal,
   startRun,
@@ -796,4 +799,72 @@ test('parseGithubRepo handles ssh and https remotes', () => {
   assert.equal(parseGithubRepo('git@github.com:a/b.git'), 'a/b')
   assert.equal(parseGithubRepo('https://github.com/a/b'), 'a/b')
   assert.equal(parseGithubRepo('https://gitlab.com/a/b'), null)
+})
+
+// ---- panel v3: links ----
+
+test('AC3: link.add drives worktree set / reference add on the focused workspace', async () => {
+  for (const [ref, args] of [
+    ['#45', ['worktree', 'set', '--worktree', 'id:wt-1', '--issue', '45']],
+    ['ENG-123', ['worktree', 'set', '--worktree', 'id:wt-1', '--linear-issue', 'ENG-123']],
+    ['https://github.com/a/b/pull/7', ['worktree', 'set', '--worktree', 'id:wt-1', '--pr', '7']],
+    ['https://linear.app/acme/issue/ABC-9', ['worktree', 'set', '--worktree', 'id:wt-1', '--linear-issue', 'https://linear.app/acme/issue/ABC-9']],
+    ['https://gitlab.com/a/b/-/merge_requests/3', ['reference', 'add', 'https://gitlab.com/a/b/-/merge_requests/3', '--worktree', 'id:wt-1']]
+  ]) {
+    const { deps, calls } = stubs()
+    const res = await addLink(deps, { ref })
+    assert.equal(res.ok, true, ref)
+    assert.deepEqual(calls.filter((c) => c.kind === 'exec' && c.file === ORCA).map((c) => c.args), [[...args, '--json']])
+  }
+})
+
+test('AC3: link.add refuses free text before touching anything, and a failing CLI surfaces its message', async () => {
+  const a = stubs()
+  const bad = await addLink(a.deps, { ref: 'fix login' })
+  assert.equal(bad.ok, false)
+  assert.equal(bad.error.code, 'unparsed_ref')
+  assert.equal(a.calls.filter((c) => c.kind === 'exec').length, 0)
+  const b = stubs({ exec: async () => ({ code: 1, stdout: '', stderr: 'Linear is not connected' }) })
+  const res = await addLink(b.deps, { ref: 'ENG-123' })
+  assert.equal(res.ok, false)
+  assert.match(res.error.message, /Linear is not connected/)
+  const c = stubs()
+  c.deps.host.call = async (m) => (m === 'workspace.readContext' ? null : {})
+  assert.equal((await addLink(c.deps, { ref: '#45' })).error.code, 'no_workspace')
+})
+
+test('AC3: link.remove clears its slot with null, and a reference by URL', async () => {
+  const { deps, calls } = stubs()
+  assert.equal((await removeLink(deps, { kind: 'issue', value: '45' })).ok, true)
+  assert.equal((await removeLink(deps, { kind: 'linear', value: 'ENG-123' })).ok, true)
+  assert.equal((await removeLink(deps, { kind: 'reference', value: 'https://x/y' })).ok, true)
+  const argvs = calls.filter((c) => c.kind === 'exec' && c.file === ORCA).map((c) => c.args)
+  assert.deepEqual(argvs, [
+    ['worktree', 'set', '--worktree', 'id:wt-1', '--issue', 'null', '--json'],
+    ['worktree', 'set', '--worktree', 'id:wt-1', '--linear-issue', 'null', '--json'],
+    ['reference', 'remove', 'https://x/y', '--worktree', 'id:wt-1', '--json']
+  ])
+  const failing = stubs({ exec: async () => ({ code: 1, stdout: '', stderr: 'workspace not found' }) })
+  assert.match((await removeLink(failing.deps, { kind: 'pr', value: '7' })).error.message, /workspace not found/)
+})
+
+test('AC4: readLinks maps worktree show linkedItems to chips', async () => {
+  const seen = []
+  const items = [
+    { provider: 'github', type: 'issue', number: 45, url: 'https://github.com/a/b/issues/45' },
+    { provider: 'github', type: 'pr', number: 7, url: 'https://github.com/a/b/pull/7' },
+    { provider: 'linear', type: 'issue', number: 0, identifier: 'ENG-123', url: 'https://linear.app/acme/issue/ENG-123' },
+    { provider: 'gitlab', type: 'mr', number: 3, url: 'https://gitlab.com/a/b/-/merge_requests/3' }
+  ]
+  const { deps } = stubs({ exec: async (file, args, opts) => (seen.push([file, ...args]), orcaOut({ worktree: { linkedItems: items } })) })
+  assert.deepEqual(await readLinks(deps, { id: 'wt-1' }), [
+    { kind: 'issue', value: '45', url: 'https://github.com/a/b/issues/45', label: '#45' },
+    { kind: 'pr', value: '7', url: 'https://github.com/a/b/pull/7', label: 'PR #7' },
+    { kind: 'linear', value: 'ENG-123', url: 'https://linear.app/acme/issue/ENG-123', label: 'ENG-123' },
+    { kind: 'reference', value: 'https://gitlab.com/a/b/-/merge_requests/3', url: 'https://gitlab.com/a/b/-/merge_requests/3', label: 'MR gitlab.com/a/b/-/merge_requests/3' }
+  ])
+  assert.deepEqual(seen, [[ORCA, 'worktree', 'show', '--worktree', 'id:wt-1', '--json']])
+  assert.ok(seen.every((c) => c[0] === ORCA), 'links reads never spawn a bare orca')
+  const broken = stubs({ exec: async () => ({ code: 1, stdout: '', stderr: 'no such worktree' }) })
+  await assert.rejects(() => readLinks(broken.deps, { id: 'wt-1' }))
 })

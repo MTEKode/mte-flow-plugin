@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
-import { claimCallout, createSearcher, filterRows, fitSelection, goalText, groupRows, iconFor, listHints, listKey, modelRows, moveIndex, mteDriftHint, mteRow, originIcon, startNote } from '../panel/logic.mjs'
+import { claimCallout, createSearcher, filterRows, fitSelection, goalText, groupRows, iconFor, linksFromItems, listHints, listKey, modelRows, moveIndex, mteDriftHint, mteRow, originIcon, parseRef, startNote } from '../panel/logic.mjs'
 
 test('model rows: default first, labels when the CLI gives them, an unlisted current model stays', () => {
   const info = { models: [{ id: 'gemini-x-high', label: 'Gemini X (High)' }, { id: 'p/m' }] }
@@ -150,4 +150,57 @@ test('AC3: failed harness/model listings become hint lines (goal.search hint pat
     'Could not list antigravity models (agy: offline); type a model id instead.'
   ])
   assert.deepEqual(listHints({ harnessError: null, models: { claude: { models: [], error: null } } }), [])
+})
+
+// ---- panel v3: Advanced fold + Links field ----
+
+test('AC1: the selector fields live in a closed Advanced fold the choosers still mount into', async () => {
+  const html = await readFile(new URL('../panel/index.html', import.meta.url), 'utf8')
+  const tag = /<details id="advanced"([^>]*)>/.exec(html)
+  assert.ok(tag, 'index.html must have <details id="advanced">')
+  assert.ok(!/\bopen\b/.test(tag[1]), 'the fold must start closed')
+  const fold = html.slice(tag.index, html.indexOf('</details>', tag.index))
+  assert.ok(fold.includes('<summary>Advanced</summary>'))
+  assert.ok(fold.includes('id="f-planner"') && fold.includes('id="f-worker"'))
+  const js = await readFile(new URL('../panel/panel.js', import.meta.url), 'utf8')
+  assert.match(js, /chooser\(\$\('f-planner'\)[\s\S]*?\$\('f-worker'\)/)
+})
+
+test('AC2: the links parser maps exact refs; free text stays search material', () => {
+  assert.deepEqual(parseRef(' #45 '), { kind: 'issue', value: '45' })
+  assert.deepEqual(parseRef('ENG-123'), { kind: 'linear', value: 'ENG-123' })
+  assert.deepEqual(parseRef('https://github.com/MTEKode/mte-flow-plugin/pull/7'), { kind: 'pr', value: '7' })
+  assert.deepEqual(parseRef('https://github.com/a/b/issues/8#issuecomment-1'), { kind: 'issue', value: '8' })
+  assert.deepEqual(parseRef('https://linear.app/acme/issue/ABC-9'), { kind: 'linear', value: 'https://linear.app/acme/issue/ABC-9' })
+  assert.deepEqual(parseRef('https://example.com/docs/x'), { kind: 'reference', value: 'https://example.com/docs/x' })
+  assert.equal(parseRef('fix login bug'), null)
+  assert.equal(parseRef(''), null)
+  assert.equal(parseRef('https:// not a url'), null)
+})
+
+test('AC4: worktree linkedItems become chips carrying the remove data', () => {
+  assert.deepEqual(linksFromItems([
+    { provider: 'github', type: 'issue', number: 45, url: 'u45' },
+    { provider: 'github', type: 'pr', number: 7 },
+    { provider: 'linear', type: 'issue', number: 0, linearIdentifier: 'ENG-123', url: 'lu' },
+    { provider: 'gitlab', type: 'mr', number: 3, url: 'https://gitlab.com/a/b/-/merge_requests/3' }
+  ]), [
+    { kind: 'issue', value: '45', url: 'u45', label: '#45' },
+    { kind: 'pr', value: '7', url: '', label: 'PR #7' },
+    { kind: 'linear', value: 'ENG-123', url: 'lu', label: 'ENG-123' },
+    { kind: 'reference', value: 'https://gitlab.com/a/b/-/merge_requests/3', url: 'https://gitlab.com/a/b/-/merge_requests/3', label: 'MR gitlab.com/a/b/-/merge_requests/3' }
+  ])
+  assert.deepEqual(linksFromItems(undefined), [])
+})
+
+test('AC3: the panel and worker wire link.add/link.remove, errors surfacing as the field hint', async () => {
+  const html = await readFile(new URL('../panel/index.html', import.meta.url), 'utf8')
+  assert.ok(html.includes('placeholder="Add by identifier or URL: ENG-123, #45, https://…"'))
+  const js = await readFile(new URL('../panel/panel.js', import.meta.url), 'utf8')
+  assert.match(js, /req\('link.add'/)
+  assert.match(js, /req\('link.remove'/)
+  assert.match(js, /setLinkHint\(r\.error/)
+  const main = await readFile(new URL('../worker/main.mjs', import.meta.url), 'utf8')
+  assert.match(main, /panels\.handle\('link.add'/)
+  assert.match(main, /panels\.handle\('link.remove'/)
 })

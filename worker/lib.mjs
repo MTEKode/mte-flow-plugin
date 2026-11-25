@@ -5,12 +5,13 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { linksFromItems, parseRef } from '../panel/logic.mjs'
 
 // agent.launch and workspace.create cap prompts at 4096 chars; stay well under it.
 export const PROMPT_MAX = 4000
 export const TRUNCATION_MARKER = '\n[goal truncated]'
 /** The mte CLI version this plugin release is built for; the setup installs it when `mte` is missing or older. */
-export const REQUIRED_MTE_VERSION = '0.8.0'
+export const REQUIRED_MTE_VERSION = '0.8.1'
 export const MIN_NODE_MAJOR = 24
 export const tarballUrl = (version) =>
   `https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v${version}/mtekode-mte-${version}.tgz`
@@ -875,4 +876,62 @@ export async function searchGoal(deps, { q }, { isStale = () => false } = {}) {
     return { stale: true, items: [], hints: [] }
   }
   return { items: [...lin, ...gh], hints }
+}
+
+// ---- panel links: link/unlink issues and PRs on the focused workspace ----
+
+const LINK_FLAGS = { issue: '--issue', pr: '--pr', linear: '--linear-issue' }
+const worktreeTarget = (ws) => ['--worktree', `id:${ws.id}`]
+
+/** argv that links a parsed ref: GitHub/Linear go through their `worktree set` slot, any other URL through `orca reference add`. */
+export function linkAddArgs(ws, ref) {
+  const flag = LINK_FLAGS[ref.kind]
+  return flag ? ['worktree', 'set', ...worktreeTarget(ws), flag, ref.value] : ['reference', 'add', ref.value, ...worktreeTarget(ws)]
+}
+
+/** argv that unlinks a chip: slot flags clear with null, references remove by URL. */
+export function linkRemoveArgs(ws, link) {
+  const flag = LINK_FLAGS[link.kind]
+  return flag ? ['worktree', 'set', ...worktreeTarget(ws), flag, 'null'] : ['reference', 'remove', String(link.value ?? link.url), ...worktreeTarget(ws)]
+}
+
+/** Links of the focused workspace for the snapshot: `worktree show --json`'s linkedItems as chips. */
+export async function readLinks(deps, ws) {
+  const shown = await orcaJson(deps, ['worktree', 'show', ...worktreeTarget(ws)])
+  return linksFromItems(shown?.worktree?.linkedItems)
+}
+
+/** `link.add`: parse the typed ref, then link it on the focused workspace; failures come back as { ok, error }. */
+export async function addLink(deps, { ref } = {}) {
+  const parsed = parseRef(ref)
+  if (!parsed) {
+    return fail('link', 'unparsed_ref', `“${String(ref ?? '').slice(0, 60)}” is not an identifier or URL: pick a suggestion instead.`)
+  }
+  const ws = await resolveWorkspace(deps.host)
+  if (!ws) {
+    return fail('workspace', 'no_workspace', 'No workspace is focused.')
+  }
+  try {
+    await orcaJson(deps, linkAddArgs(ws, parsed))
+    return { ok: true }
+  } catch (error) {
+    return fail('link', 'link_failed', String(error?.message ?? error))
+  }
+}
+
+/** `link.remove`: unlink a chip from the focused workspace. */
+export async function removeLink(deps, { kind, value } = {}) {
+  if (!kind) {
+    return fail('link', 'bad_link', 'Name which link to remove.')
+  }
+  const ws = await resolveWorkspace(deps.host)
+  if (!ws) {
+    return fail('workspace', 'no_workspace', 'No workspace is focused.')
+  }
+  try {
+    await orcaJson(deps, linkRemoveArgs(ws, { kind, value }))
+    return { ok: true }
+  } catch (error) {
+    return fail('link', 'link_failed', String(error?.message ?? error))
+  }
 }

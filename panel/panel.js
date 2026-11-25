@@ -1,5 +1,5 @@
 // MTE Flow panel (html, isolated frame): all data comes from the worker through orca.plugin.request.
-import { claimCallout, createSearcher, filterRows, fitSelection, goalText, groupRows, iconFor, KIND_LABEL, listHints, listKey, modelRows, mteDriftHint, mteRow, originIcon, originOf, startNote } from './logic.mjs'
+import { claimCallout, createSearcher, filterRows, fitSelection, goalText, groupRows, iconFor, KIND_LABEL, listHints, listKey, modelRows, mteDriftHint, mteRow, originIcon, originOf, parseRef, startNote } from './logic.mjs'
 
 const $ = (id) => document.getElementById(id)
 const req = (name, params = {}) => orca.plugin.request(name, params, { timeoutMs: 120000 })
@@ -157,6 +157,68 @@ goal.addEventListener('keydown', (e) => {
 })
 goal.addEventListener('blur', () => setTimeout(closeGoal, 120))
 
+// ---- links: exact refs link on Enter, free text searches (goal.search), suggestions and chips link/unlink ----
+const links = $('links')
+const linksList = $('links-list')
+let linkItems = []
+let li = 0
+const setLinkHint = (text) => {
+  const hint = $('links-hint')
+  hint.textContent = text ?? ''
+  hint.hidden = !text
+}
+const closeLinks = () => { linksList.hidden = true; links.setAttribute('aria-expanded', 'false'); links.setAttribute('aria-activedescendant', ''); linkItems = [] }
+function drawLinks() {
+  linksList.replaceChildren(
+    ...linkItems.map((it, i) => {
+      const row = el('div', { id: `lk-${i}`, className: 'opt' + (i === li ? ' active' : ''), role: 'option' }, el('span', { className: 'tag', textContent: KIND_LABEL[it.kind] ?? 'Link' }), el('code', { textContent: it.id ?? '' }), el('span', { className: 't', textContent: it.title ?? it.url ?? '' }))
+      row.onmousedown = (e) => { e.preventDefault(); sendLink(it) }
+      return row
+    })
+  )
+  linksList.hidden = linkItems.length === 0
+  links.setAttribute('aria-expanded', String(linkItems.length > 0))
+  links.setAttribute('aria-activedescendant', linkItems.length ? `lk-${li}` : '')
+  linksList.querySelector('.active')?.scrollIntoView({ block: 'nearest' })
+}
+async function sendLink(it = {}) {
+  const ref = String(it?.url || it?.id || links.value).trim()
+  closeLinks()
+  setLinkHint('')
+  const r = await req('link.add', { ref }).catch((e) => ({ ok: false, error: { message: String(e?.message ?? e) } }))
+  if (r.ok) {
+    links.value = ''
+    void load()
+  } else setLinkHint(r.error?.message ?? 'Could not link that.')
+}
+async function unlink(link) {
+  setLinkHint('')
+  const r = await req('link.remove', { kind: link.kind, value: link.value }).catch((e) => ({ ok: false, error: { message: String(e?.message ?? e) } }))
+  if (!r.ok) setLinkHint(r.error?.message ?? 'Could not unlink that.')
+  void load()
+}
+const linkSearch = createSearcher({
+  request: (q) => req('goal.search', { q }),
+  onResult: (res) => { linkItems = res?.items ?? []; li = 0; drawLinks() }
+})
+links.addEventListener('input', () => {
+  setLinkHint('')
+  if (parseRef(links.value)) { linkSearch.cancel(); closeLinks(); return }
+  linkSearch.input(links.value)
+})
+links.addEventListener('keydown', (e) => {
+  const exact = parseRef(links.value)
+  if (e.key === 'Enter' && (exact || (!linksList.hidden && linkItems.length))) { e.preventDefault(); sendLink(exact ? {} : linkItems[li]); return }
+  if (linksList.hidden || !linkItems.length || !['ArrowDown', 'ArrowUp', 'Escape'].includes(e.key)) return
+  const r = listKey(li, linkItems.length, e.key)
+  e.preventDefault()
+  li = r.index
+  if (r.action === 'select') sendLink(linkItems[li])
+  else if (r.action === 'close') closeLinks()
+  else drawLinks()
+})
+links.addEventListener('blur', () => setTimeout(closeLinks, 120))
+
 // ---- actions ----
 async function act(name, run, success) {
   st.busy = name; st.notice = null; st.claimedBy = null; render()
@@ -236,6 +298,17 @@ function render() {
   $('active').textContent = `${s?.activeWorkers ?? 0} active`
   const version = s ? mteRow(s.mte) : null
   $('ws').textContent = (s?.workspace ? `Workspace: ${s.workspace.name} · ${s.workspace.path}` : 'No workspace focused.') + (version ? ` · ${version}` : '')
+  const chips = s?.workspace?.links ?? []
+  const chipBox = $('chips')
+  chipBox.hidden = chips.length === 0
+  chipBox.replaceChildren(
+    ...chips.map((l) =>
+      el('span', { className: 'chip', title: l.url || l.label },
+        el('span', { className: 'tag', textContent: KIND_LABEL[l.kind] ?? 'Link' }),
+        el('span', { className: 't', textContent: l.label }),
+        el('button', { type: 'button', textContent: '×', ariaLabel: `Remove ${l.label}`, disabled: st.busy !== null, onclick: () => unlink(l) }))
+    )
+  )
   const runs = s?.orchestrators ?? []
   $('runs').replaceChildren(
     ...(runs.length
