@@ -84,12 +84,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-/** Missing file → null. Unreadable/invalid file throws (callers decide: guard fails open, CLI reports). */
+/** Missing file → null. Unreadable/invalid file throws with its path (callers decide: guard fails open, CLI reports). */
 function readJsonFile(path: string): Record<string, unknown> | null {
   if (!existsSync(path)) {
     return null
   }
-  const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    throw new Error(`${path} is not valid JSON`)
+  }
   if (!isRecord(parsed)) {
     throw new Error(`${path} must hold a JSON object`)
   }
@@ -123,10 +128,9 @@ export function writePin(ws: string, pin: WorkerPin): WorkerPin {
   return clean
 }
 
-/** One-time move of an old `<ws>/.mte/planner.json` into the worktree's git dir (only when no claim exists there). */
-function migrateLegacyPlanner(ws: string): void {
+/** One-time move of an old `<ws>/.mte/planner.json` into the worktree's git dir (only when no claim exists there). Takes the already-resolved claim path: one rev-parse per call, not one per helper. */
+function migrateLegacyPlanner(ws: string, shared: string): void {
   const legacy = legacyPlannerPath(ws)
-  const shared = plannerPath(ws)
   if (legacy === shared || !existsSync(legacy)) {
     return
   }
@@ -140,8 +144,9 @@ function migrateLegacyPlanner(ws: string): void {
 }
 
 export function readPlanner(ws: string): PlannerClaim | null {
-  migrateLegacyPlanner(ws)
-  const raw = readJsonFile(plannerPath(ws))
+  const path = plannerPath(ws)
+  migrateLegacyPlanner(ws, path)
+  const raw = readJsonFile(path)
   if (raw === null) {
     return null
   }
@@ -155,11 +160,12 @@ export function writePlanner(ws: string, identity: Identity): PlannerClaim {
   return claim
 }
 
-/** Removes the planner claim; true when there was one. */
+/** Removes the planner claim; true when there was one. Works on a corrupt file (it removes without parsing). */
 export function removePlanner(ws: string): boolean {
-  migrateLegacyPlanner(ws)
-  const had = existsSync(plannerPath(ws))
-  rmSync(plannerPath(ws), { force: true })
+  const path = plannerPath(ws)
+  migrateLegacyPlanner(ws, path)
+  const had = existsSync(path)
+  rmSync(path, { force: true })
   return had
 }
 

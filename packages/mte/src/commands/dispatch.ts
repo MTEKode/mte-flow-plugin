@@ -1,22 +1,27 @@
 import { spawnSync } from 'node:child_process'
 import { gatePlanner, pinFlags } from '../wiring/guard-logic.ts'
 import { getFlag, hasFlag } from '../wiring/shell-parse.ts'
-import { identityFromEnv, readPin } from '../wiring/state.ts'
+import { identityFromEnv, logGuard, readPin } from '../wiring/state.ts'
 import { resolveWorkspaceRoot, usageError } from './flags.ts'
 import type { Command } from './flags.ts'
 
-/** Concurrent workers per Run; the next dispatch waits. Override with MTE_MAX_WORKERS. */
+/** Concurrent workers per Run; the next dispatch waits. Override with MTE_MAX_WORKERS (must be a positive integer; anything else is a usage error). */
 export const DEFAULT_MAX_WORKERS = 3
 const SETTLED = new Set(['succeeded', 'failed', 'stopped', 'cancelled', 'abandoned'])
 
-/** Live, unsettled workers in the Run bound to this terminal, or null when orca cannot tell (fail open). */
-function activeWorkers(orca: string, cwd: string): number | null {
+/**
+ * Live, unsettled workers in the Run bound to this terminal, or null when orca cannot tell (fail open, logged once
+ * to .mte/guard.log). ponytail: --limit 100 caps the probe; a Run with more than 100 unsettled workers would
+ * under-count and loosen the cap — impossible in practice, since one planner dispatches a handful.
+ */
+function activeWorkers(orca: string, cwd: string, ws: string): number | null {
   const args = ['orchestration', 'worker-list', '--json', '--terminal-state', 'active', '--limit', '100']
   const res = spawnSync(orca, args, { cwd, encoding: 'utf8' })
   try {
     const workers: { state?: string }[] = JSON.parse(res.stdout).result.workers
     return workers.filter((w) => !SETTLED.has(w.state ?? '')).length
-  } catch {
+  } catch (error) {
+    logGuard(ws, `dispatch: worker-list failed open: ${error instanceof Error ? error.message : String(error)}`)
     return null
   }
 }
@@ -28,12 +33,21 @@ function activeWorkers(orca: string, cwd: string): number | null {
  */
 export const dispatchCommand: Command = ({ flags, cwd, rest = [] }) => {
   const task = flags.get('task')
-  if (typeof task !== 'string') {
+  if (typeof task !== 'string' || task === '') {
     return usageError('usage: mte dispatch --task <id> [-- <extra worker-start args>]')
   }
   const root = resolveWorkspaceRoot(flags, cwd)
   if (typeof root !== 'string') {
     return usageError(root.error)
+  }
+  const rawMax = process.env.MTE_MAX_WORKERS
+  let max = DEFAULT_MAX_WORKERS
+  if (rawMax !== undefined && rawMax.trim() !== '') {
+    const parsed = Number(rawMax)
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      return usageError(`mte dispatch: MTE_MAX_WORKERS must be a positive integer (got "${rawMax}")`)
+    }
+    max = parsed
   }
   try {
     const who = identityFromEnv(process.env)
@@ -46,8 +60,7 @@ export const dispatchCommand: Command = ({ flags, cwd, rest = [] }) => {
     // fail open like the guard
   }
   const orca = process.env.ORCA_CLI_COMMAND || 'orca'
-  const max = Number(process.env.MTE_MAX_WORKERS) || DEFAULT_MAX_WORKERS
-  const active = activeWorkers(orca, cwd)
+  const active = activeWorkers(orca, cwd, root)
   if (active !== null && active >= max) {
     process.stderr.write(
       `mte dispatch: ${active} workers already running (limit ${max}); wait for one to finish (orca orchestration inbox) and dispatch again\n`

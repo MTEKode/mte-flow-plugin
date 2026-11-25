@@ -42,12 +42,26 @@ export function resolveWorkspaceRoot(flags: Flags, cwd: string): string | { erro
   return realMemoryWorkspacePath(root)
 }
 
-/** Identity from --session-id/--terminal-handle when any is given, else from the environment. */
-export function callerIdentity(flags: Flags): Identity {
-  const [session, handle] = ['session-id', 'terminal-handle'].map((name) => {
+const IDENTITY_FLAGS = [
+  ['sessionId', 'session-id', 'ORCA_AGENT_SESSION_ID'],
+  ['terminalHandle', 'terminal-handle', 'ORCA_TERMINAL_HANDLE']
+] as const
+
+/**
+ * The caller's environment identity wins; flags only fill gaps the env lacks, and a flag contradicting the env is an
+ * error (no spoofing). One shared rule for every identity path: `mte planner claim` refuses with it, `mte guard` denies with it.
+ */
+export function resolveIdentity(flags: Flags): Identity | { error: string } {
+  const fromEnv = identityFromEnv(process.env)
+  const str = (name: string): string | undefined => {
     const value = flags.get(name)
-    return typeof value === 'string' ? value : undefined
-  })
-  const given = withIdentity(session, handle)
-  return Object.keys(given).length > 0 ? given : identityFromEnv(process.env)
+    return typeof value === 'string' && value !== '' ? value : undefined
+  }
+  const given = withIdentity(str('session-id'), str('terminal-handle'))
+  for (const [key, flag, envName] of IDENTITY_FLAGS) {
+    if (fromEnv[key] !== undefined && given[key] !== undefined && fromEnv[key] !== given[key]) {
+      return { error: `--${flag} ${given[key]} differs from the caller's own ${envName} (${fromEnv[key]})` }
+    }
+  }
+  return { ...given, ...fromEnv }
 }

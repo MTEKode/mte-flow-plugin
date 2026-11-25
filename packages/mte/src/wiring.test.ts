@@ -121,13 +121,65 @@ describe('guard logic', () => {
     assert.equal(evaluateCommand(WORKER_START, {}, ws).allow, false)
   })
 
-  it('auto-claims on the first run-create; worker-start on an unclaimed workspace is denied', () => {
+  it('auto-claims only when allowed (hook path); plain evaluation is read-only; worker-start on an unclaimed workspace is denied', () => {
     const ws = repo()
     const first = { sessionId: 'a' }
     assert.equal(evaluateCommand(WORKER_START, first, ws).allow, false)
     assert.deepEqual(evaluateCommand('orca orchestration run-create', first, ws), { allow: true })
-    assert.equal(readPlanner(ws)?.sessionId, 'a')
+    assert.equal(readPlanner(ws), null) // AC1: read-only probes never write the claim
+    assert.deepEqual(evaluateCommand('orca orchestration run-create', first, ws, { allowClaim: true }), { allow: true })
+    assert.equal(readPlanner(ws)?.sessionId, 'a') // AC2: the hook path claims the first identified caller
     assert.equal(evaluateCommand('orca orchestration run-create', { sessionId: 'b' }, ws).allow, false)
+  })
+
+  it('planner-gate deny leaks neither the holder ids nor the --force recipe (AC4)', () => {
+    const ws = repo()
+    writePlanner(ws, { sessionId: 'ses_secret', terminalHandle: 'term_secret' })
+    const verdict = evaluateCommand(WORKER_START, { sessionId: 'intruder' }, ws)
+    assert.ok(!verdict.allow)
+    assert.ok(!verdict.reason.includes('ses_secret'), verdict.reason)
+    assert.ok(!verdict.reason.includes('term_secret'), verdict.reason)
+    assert.ok(!verdict.reason.includes('--force'), verdict.reason)
+    assert.match(verdict.reason, /workers must not dispatch/)
+    assert.match(verdict.reason, /orca orchestration ask/)
+    assert.match(verdict.reason, /mte planner show/)
+    const anon = evaluateCommand(WORKER_START, {}, ws)
+    assert.ok(!anon.allow && anon.reason.includes('(caller presented no identity)'))
+  })
+
+  it('sudo/xargs/nice-wrapped worker-start is recognised and still pin-checked (AC5)', () => {
+    const ws = repo()
+    writePlanner(ws, { sessionId: 'p' })
+    writePin(ws, { agent: 'claude', model: 'sonnet', effort: 'high' })
+    for (const prefix of ['sudo', 'xargs', 'nice']) {
+      const bad = evaluateCommand(`${prefix} orca orchestration worker-start --task x`, { sessionId: 'p' }, ws)
+      assert.ok(!bad.allow, prefix)
+      assert.match(bad.reason, /--agent claude --model sonnet --effort high/, prefix)
+      assert.deepEqual(
+        evaluateCommand(`${prefix} orca orchestration worker-start --task x --agent claude --model sonnet --effort high`, { sessionId: 'p' }, ws),
+        { allow: true },
+        prefix
+      )
+    }
+  })
+
+  it('readPlanner spawns one git rev-parse --absolute-git-dir per call (AC9)', () => {
+    const ws = repo()
+    const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim()
+    const stubDir = mkdtempSync(join(root, 'gitstub-'))
+    const calls = join(stubDir, 'calls.log')
+    writeFileSync(join(stubDir, 'git'), `#!/bin/sh\necho "$1 $2" >> "${calls}"\nexec "${realGit}" "$@"\n`)
+    chmodSync(join(stubDir, 'git'), 0o755)
+    const prevPath = process.env.PATH
+    try {
+      process.env.PATH = `${stubDir}:${prevPath}`
+      readPlanner(ws)
+      readPlanner(ws)
+    } finally {
+      process.env.PATH = prevPath
+    }
+    const revParses = readFileSync(calls, 'utf8').split('\n').filter((line) => line.includes('--absolute-git-dir'))
+    assert.equal(revParses.length, 2) // exactly one per readPlanner call, not two
   })
 
   it('denies worker-start missing the pin with the corrected command', () => {
@@ -251,19 +303,64 @@ describe('mte guard cli', () => {
     assert.equal(mte(ws, ['guard', '--command', 'ls', '--session-id', 'x']).status, 0)
   })
 
-  it('denies a caller with no identity once a planner is claimed; unclaimed run-create still allowed', () => {
+  it('denies a caller with no identity once a planner is claimed; an identified probe is read-only', () => {
     const ws = repo()
     const RUN_CREATE = 'orca orchestration run-create'
     assert.equal(mte(ws, ['guard', '--command', RUN_CREATE]).status, 0)
     assert.equal(readPlanner(ws), null) // nobody to claim for
     assert.equal(mte(ws, ['guard', '--command', RUN_CREATE, '--session-id', 'p']).status, 0)
-    assert.equal(readPlanner(ws)?.sessionId, 'p') // an identified first run-create claims
+    assert.equal(readPlanner(ws), null) // AC1: the probe never writes the claim, hook mode does
+    assert.equal(mte(ws, ['planner', 'claim', '--session-id', 'p']).status, 0)
     for (const command of [WORKER_START, RUN_CREATE]) {
       const res = mte(ws, ['guard', '--command', command])
       assert.equal(res.status, 2, command)
       assert.match(res.stderr, /no identity/)
     }
     assert.equal(mte(ws, ['guard', '--command', 'ls']).status, 0)
+  })
+
+  it('hook mode auto-claims the first identified run-create caller (AC2)', () => {
+    const ws = repo()
+    const payload = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'orca orchestration run-create --objective x' }, cwd: ws })
+    const first = mte(ws, ['guard', '--claude-hook'], { ORCA_AGENT_SESSION_ID: 'hook-1' }, payload)
+    assert.equal(first.status, 0)
+    assert.equal(first.stdout.trim(), '') // allowed: no deny JSON
+    assert.equal(readPlanner(ws)?.sessionId, 'hook-1')
+    const second = mte(ws, ['guard', '--claude-hook'], { ORCA_AGENT_SESSION_ID: 'hook-2' }, payload)
+    assert.equal(second.status, 0) // the hook path always exits 0
+    const out = JSON.parse(second.stdout).hookSpecificOutput
+    assert.equal(out.permissionDecision, 'deny')
+    assert.equal(out.hookEventName, 'PreToolUse')
+  })
+
+  it('empty flag values are usage errors, never silent passes (AC11)', () => {
+    const ws = repo()
+    assert.equal(mte(ws, ['guard', '--command=']).status, 1)
+    assert.match(mte(ws, ['guard', '--command=']).stderr, /--command <shell command> is required/)
+    assert.equal(mte(ws, ['guard', '--command', '']).status, 1)
+    assert.equal(mte(ws, ['dispatch', '--task=']).status, 1)
+    assert.match(mte(ws, ['dispatch', '--task=']).stderr, /usage: mte dispatch --task/)
+    assert.equal(mte(ws, ['guard', '--claude-hook', '--command='], {}, '{"tool_name":"Bash","tool_input":{"command":"ls"},"cwd":"' + ws + '"}').status, 0) // hook stays fail-open
+  })
+
+  it('guard identity: env wins, flags fill gaps, contradicting flags are denied (AC3)', () => {
+    const ws = repo()
+    mte(ws, ['planner', 'claim', '--session-id', 'p', '--terminal-handle', 't'])
+    // flag equal to env
+    assert.equal(mte(ws, ['guard', '--command', WORKER_START, '--session-id', 'p'], { ORCA_AGENT_SESSION_ID: 'p' }).status, 0)
+    // flag contradicting env: denied even though the env identity alone would pass
+    const bad = mte(ws, ['guard', '--command', WORKER_START, '--session-id', 'q'], { ORCA_AGENT_SESSION_ID: 'p' })
+    assert.equal(bad.status, 2)
+    assert.match(bad.stderr, /session-id q differs from the caller's own ORCA_AGENT_SESSION_ID \(p\)/)
+    const hook = mte(ws, ['guard', '--claude-hook', '--session-id', 'q'], { ORCA_AGENT_SESSION_ID: 'p' }, JSON.stringify({ tool_name: 'Bash', tool_input: { command: WORKER_START }, cwd: ws }))
+    assert.equal(hook.status, 0)
+    const out = JSON.parse(hook.stdout).hookSpecificOutput
+    assert.equal(out.permissionDecision, 'deny')
+    assert.match(out.permissionDecisionReason, /differs/)
+    // flag filling an env gap: env carries the terminal handle, the flag adds the session id
+    const ws2 = repo()
+    mte(ws2, ['planner', 'claim', '--terminal-handle', 't'])
+    assert.equal(mte(ws2, ['guard', '--command', WORKER_START, '--session-id', 'unrelated'], { ORCA_TERMINAL_HANDLE: 't' }).status, 0)
   })
 
   it('fails open and logs on internal errors', () => {
@@ -329,6 +426,54 @@ describe('dispatch concurrency limit', () => {
     assert.doesNotMatch(full.stdout, /worker-start/)
     const raised = mte(ws, ['dispatch', '--task', 'T-1'], { ...orca, MTE_MAX_WORKERS: '4' })
     assert.equal(raised.stdout.trim(), 'ORCA orchestration worker-start --task T-1')
+    const lowered = mte(ws, ['dispatch', '--task', 'T-1'], { ...orca, MTE_MAX_WORKERS: '2' })
+    assert.equal(lowered.status, 3) // AC6: a valid MTE_MAX_WORKERS=2 is honored
+    assert.equal(mte(ws, ['dispatch', '--task', 'T-1'], { ...orca, MTE_MAX_WORKERS: '' }).status, 3) // empty falls back to the default 3
+  })
+
+  it('rejects a bogus MTE_MAX_WORKERS with a usage error before any worker-start (AC6)', () => {
+    const ws = repo()
+    mte(ws, ['planner', 'claim', '--session-id', 'p'])
+    const orca = { ORCA_CLI_COMMAND: join(bin, 'fake-orca'), ORCA_AGENT_SESSION_ID: 'p' }
+    for (const value of ['0', '-1', 'abc', '2.5', 'NaN']) {
+      const res = mte(ws, ['dispatch', '--task', 'T-1'], { ...orca, MTE_MAX_WORKERS: value })
+      assert.equal(res.status, 1, value)
+      assert.match(res.stderr, /MTE_MAX_WORKERS must be a positive integer/, value)
+      assert.doesNotMatch(res.stdout, /ORCA/, value)
+    }
+  })
+
+  it('logs one guard line and still dispatches when worker-list output is unparseable (AC12)', () => {
+    const ws = repo()
+    mte(ws, ['planner', 'claim', '--session-id', 'p'])
+    const junk = join(root, 'junk-orca')
+    writeFileSync(junk, '#!/bin/sh\nif [ "$2" = worker-list ]; then echo "not json at all"; else echo "ORCA $@"; fi\n')
+    chmodSync(junk, 0o755)
+    const res = mte(ws, ['dispatch', '--task', 'T-1'], { ORCA_CLI_COMMAND: junk, ORCA_AGENT_SESSION_ID: 'p' })
+    assert.match(res.stdout, /ORCA orchestration worker-start --task T-1/) // fail open: the dispatch went through
+    const log = readFileSync(join(ws, '.mte', 'guard.log'), 'utf8')
+    assert.equal(log.split('\n').filter((line) => line.includes('worker-list failed open')).length, 1)
+  })
+})
+
+describe('corrupt claim file', () => {
+  it('show and claim exit 1 naming the path and the release remedy; release removes it (AC8)', () => {
+    const ws = repo()
+    const gitDir = spawnSync('git', ['rev-parse', '--absolute-git-dir'], { cwd: ws, encoding: 'utf8' }).stdout.trim()
+    const claim = join(gitDir, 'mte', 'planner.json')
+    mkdirSync(join(claim, '..'), { recursive: true })
+    writeFileSync(claim, '{oops')
+    const show = mte(ws, ['planner', 'show'])
+    assert.equal(show.status, 1)
+    assert.ok(show.stderr.includes(claim), show.stderr)
+    assert.ok(show.stderr.includes('mte planner release'), show.stderr)
+    const claimRes = mte(ws, ['planner', 'claim', '--session-id', 'x'])
+    assert.equal(claimRes.status, 1)
+    assert.ok(claimRes.stderr.includes(claim), claimRes.stderr)
+    assert.ok(claimRes.stderr.includes('mte planner release'), claimRes.stderr)
+    assert.deepEqual(JSON.parse(mte(ws, ['planner', 'release']).stdout), { released: true })
+    assert.equal(existsSync(claim), false)
+    assert.deepEqual(JSON.parse(mte(ws, ['planner', 'show']).stdout), { claimed: false })
   })
 })
 

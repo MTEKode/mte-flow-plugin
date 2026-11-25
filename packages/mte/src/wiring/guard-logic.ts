@@ -1,13 +1,6 @@
 import { findInvocations, getFlag, removeFlags, renderBin, shellQuote } from './shell-parse.ts'
 import type { GateKind, Invocation } from './shell-parse.ts'
-import {
-  describeIdentity,
-  hasIdentity,
-  readPin,
-  readPlanner,
-  sameCaller,
-  writePlanner
-} from './state.ts'
+import { hasIdentity, readPin, readPlanner, sameCaller, writePlanner } from './state.ts'
 import type { Identity, WorkerPin } from './state.ts'
 
 export type Verdict = { allow: true } | { allow: false; reason: string }
@@ -33,12 +26,17 @@ function checkPin(inv: Invocation, pin: WorkerPin): Verdict {
   return deny(`worker-start must use the worker pin; run: ${corrected}${tip}`)
 }
 
-export function gatePlanner(kind: GateKind, who: Identity, ws: string): Verdict {
+export type GateOptions = {
+  /** Write the auto-claim on the first identified run-create. True only in `--claude-hook` mode; a `--command` probe is read-only. */
+  allowClaim?: boolean
+}
+
+export function gatePlanner(kind: GateKind, who: Identity, ws: string, opts: GateOptions = {}): Verdict {
   const planner = readPlanner(ws)
   if (planner === null) {
     if (kind === 'run-create') {
-      if (hasIdentity(who)) {
-        writePlanner(ws, who) // first caller claims the workspace
+      if (hasIdentity(who) && opts.allowClaim === true) {
+        writePlanner(ws, who) // hook interception only: the first caller claims the workspace
       }
       return ALLOW
     }
@@ -51,14 +49,15 @@ export function gatePlanner(kind: GateKind, who: Identity, ws: string): Verdict 
     return ALLOW
   }
   const caller = hasIdentity(who) ? '' : ' (caller presented no identity)'
+  // No holder details and no --force recipe here: the deny reaches every worker's tool output.
   return deny(
-    `only the claimed MTE planner (${describeIdentity(planner)}) may run \`${kind}\`${caller}; workers must not dispatch, use \`orca orchestration ask\` to ask the orchestrator (replace the planner: mte planner claim --force)`
+    `only the claimed MTE planner may run \`${kind}\`${caller}; workers must not dispatch, use \`orca orchestration ask\` to ask the orchestrator (run \`mte planner show\` to see who holds the claim)`
   )
 }
 
-export function evaluateCommand(command: string, who: Identity, ws: string): Verdict {
+export function evaluateCommand(command: string, who: Identity, ws: string, opts: GateOptions = {}): Verdict {
   for (const inv of findInvocations(command)) {
-    const planner = gatePlanner(inv.kind, who, ws)
+    const planner = gatePlanner(inv.kind, who, ws, opts)
     if (!planner.allow) {
       return planner
     }

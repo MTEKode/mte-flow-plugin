@@ -1,27 +1,15 @@
-import { describeIdentity, hasIdentity, identityFromEnv, readPlanner, removePlanner, sameCaller, withIdentity, writePlanner } from '../wiring/state.ts'
-import type { Identity } from '../wiring/state.ts'
-import { resolveWorkspaceRoot, usageError } from './flags.ts'
-import type { Command, Flags } from './flags.ts'
+import { describeIdentity, hasIdentity, readPlanner, removePlanner, sameCaller, writePlanner } from '../wiring/state.ts'
+import type { PlannerClaim } from '../wiring/state.ts'
+import { resolveIdentity, resolveWorkspaceRoot, usageError } from './flags.ts'
+import type { Command } from './flags.ts'
 
-const CLAIM_FLAGS = [
-  ['sessionId', 'session-id', 'ORCA_AGENT_SESSION_ID'],
-  ['terminalHandle', 'terminal-handle', 'ORCA_TERMINAL_HANDLE']
-] as const
-
-/** The caller's environment identity wins; a flag naming a different identity than the env's is refused (no spoofing), flags only fill gaps. */
-function claimIdentity(flags: Flags): Identity | { error: string } {
-  const fromEnv = identityFromEnv(process.env)
-  const str = (name: string): string | undefined => {
-    const value = flags.get(name)
-    return typeof value === 'string' ? value : undefined
+/** Reads the claim; a corrupt file comes back as its usage-error text (show and claim report it, release removes it unparsed). */
+function readClaimOrUsageError(root: string): PlannerClaim | null | string {
+  try {
+    return readPlanner(root)
+  } catch (error) {
+    return `${error instanceof Error ? error.message : String(error)}; remove it with: mte planner release`
   }
-  const given = withIdentity(str('session-id'), str('terminal-handle'))
-  for (const [key, flag, envName] of CLAIM_FLAGS) {
-    if (fromEnv[key] !== undefined && given[key] !== undefined && fromEnv[key] !== given[key]) {
-      return { error: `--${flag} ${given[key]} differs from the caller's own ${envName} (${fromEnv[key]}); refusing to claim with another identity` }
-    }
-  }
-  return { ...given, ...fromEnv }
 }
 
 /** `mte planner claim [--force] [--session-id id] [--terminal-handle h]`: first claim wins, --force replaces; records every identity present. */
@@ -30,14 +18,17 @@ export const plannerClaimCommand: Command = ({ flags, cwd }) => {
   if (typeof root !== 'string') {
     return usageError(root.error)
   }
-  const who = claimIdentity(flags)
+  const who = resolveIdentity(flags)
   if ('error' in who) {
-    return usageError(who.error)
+    return usageError(`${who.error}; refusing to claim with another identity`)
   }
   if (!hasIdentity(who)) {
     return usageError('no caller identity: pass --session-id/--terminal-handle (env ORCA_AGENT_SESSION_ID / ORCA_TERMINAL_HANDLE is empty)')
   }
-  const current = readPlanner(root)
+  const current = readClaimOrUsageError(root)
+  if (typeof current === 'string') {
+    return usageError(current)
+  }
   if (current !== null && !sameCaller(current, who) && flags.get('force') !== true) {
     return usageError(`planner already claimed by ${describeIdentity(current)}; use --force to replace it`)
   }
@@ -51,7 +42,10 @@ export const plannerShowCommand: Command = ({ flags, cwd }) => {
   if (typeof root !== 'string') {
     return usageError(root.error)
   }
-  const claim = readPlanner(root)
+  const claim = readClaimOrUsageError(root)
+  if (typeof claim === 'string') {
+    return usageError(claim)
+  }
   console.log(JSON.stringify(claim === null ? { claimed: false } : { claimed: true, ...claim }))
   return 0
 }
