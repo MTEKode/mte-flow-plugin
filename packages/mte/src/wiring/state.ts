@@ -2,8 +2,8 @@ import { spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
-/** Who is calling: Orca session id (native chat), terminal handle (terminal agents) and/or opencode session id. */
-export type Identity = { sessionId?: string; terminalHandle?: string; opencodeSessionId?: string }
+/** Who is calling: Orca session id (native chat) and/or terminal handle (terminal agents). */
+export type Identity = { sessionId?: string; terminalHandle?: string }
 export type WorkerPin = { agent: string; model: string; effort?: string }
 export type PlannerClaim = Identity & { claimedAt: string }
 
@@ -21,45 +21,32 @@ export function normalizeHandle(raw: string | undefined): string | undefined {
 }
 
 export function identityFromEnv(env: NodeJS.ProcessEnv): Identity {
-  return withIdentity(env.ORCA_AGENT_SESSION_ID, env.ORCA_TERMINAL_HANDLE, env.MTE_OPENCODE_SESSION)
+  return withIdentity(env.ORCA_AGENT_SESSION_ID, env.ORCA_TERMINAL_HANDLE)
 }
 
-export function withIdentity(
-  sessionId: string | undefined,
-  terminalHandle: string | undefined,
-  opencodeSessionId?: string
-): Identity {
+export function withIdentity(sessionId: string | undefined, terminalHandle: string | undefined): Identity {
   const session = normalizeSessionId(sessionId)
   const handle = normalizeHandle(terminalHandle)
-  const opencode = normalizeHandle(opencodeSessionId)
   return {
     ...(session ? { sessionId: session } : {}),
-    ...(handle ? { terminalHandle: handle } : {}),
-    ...(opencode ? { opencodeSessionId: opencode } : {})
+    ...(handle ? { terminalHandle: handle } : {})
   }
 }
 
 export function hasIdentity(identity: Identity): boolean {
-  return (
-    identity.sessionId !== undefined || identity.terminalHandle !== undefined || identity.opencodeSessionId !== undefined
-  )
+  return identity.sessionId !== undefined || identity.terminalHandle !== undefined
 }
 
-/** Any shared identity (terminal handle, agent session, opencode session) is the same caller. */
+/** Any shared identity (terminal handle, agent session) is the same caller. */
 export function sameCaller(claim: Identity, caller: Identity): boolean {
   return (
     (claim.sessionId !== undefined && claim.sessionId === caller.sessionId) ||
-    (claim.terminalHandle !== undefined && claim.terminalHandle === caller.terminalHandle) ||
-    (claim.opencodeSessionId !== undefined && claim.opencodeSessionId === caller.opencodeSessionId)
+    (claim.terminalHandle !== undefined && claim.terminalHandle === caller.terminalHandle)
   )
 }
 
 export function describeIdentity(identity: Identity): string {
-  return [
-    identity.sessionId && `session ${identity.sessionId}`,
-    identity.terminalHandle && `terminal ${identity.terminalHandle}`,
-    identity.opencodeSessionId && `opencode session ${identity.opencodeSessionId}`
-  ]
+  return [identity.sessionId && `session ${identity.sessionId}`, identity.terminalHandle && `terminal ${identity.terminalHandle}`]
     .filter(Boolean)
     .join(' / ')
 }
@@ -83,24 +70,31 @@ export function gitCommonDir(ws: string): string | null {
 }
 
 /**
- * The planner claim is shared by every worktree of a repo: `<git-common-dir>/mte/planner.json` (inside `.git`, never
- * committed). A workspace that is not a git checkout keeps the claim in its own `.mte/`.
+ * The planner claim belongs to one worktree, so parallel runs in sibling worktrees never fight over it:
+ * `<git-dir>/mte/planner.json` (`.git/worktrees/<name>/` for a linked worktree; inside `.git`, never committed).
+ * Workers run in the Run home worktree, so they still meet their planner's claim. Outside git: `<ws>/.mte/`.
  */
 function plannerPath(ws: string): string {
-  const dir = gitCommonDir(ws)
-  return dir === null ? legacyPlannerPath(ws) : join(dir, 'mte', 'planner.json')
+  const res = spawnSync('git', ['rev-parse', '--absolute-git-dir'], { cwd: ws, encoding: 'utf8' })
+  const dir = res.status === 0 ? res.stdout.trim() : ''
+  return dir === '' ? legacyPlannerPath(ws) : join(dir, 'mte', 'planner.json')
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-/** Missing file → null. Unreadable/invalid file throws (callers decide: guard fails open, CLI reports). */
+/** Missing file → null. Unreadable/invalid file throws with its path (callers decide: guard fails open, CLI reports). */
 function readJsonFile(path: string): Record<string, unknown> | null {
   if (!existsSync(path)) {
     return null
   }
-  const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    throw new Error(`${path} is not valid JSON`)
+  }
   if (!isRecord(parsed)) {
     throw new Error(`${path} must hold a JSON object`)
   }
@@ -128,21 +122,15 @@ export function readPin(ws: string): WorkerPin | null {
   return { agent, model, ...(effort ? { effort } : {}) }
 }
 
-/** opencode does not support --effort, so a pin for it never carries one. */
 export function writePin(ws: string, pin: WorkerPin): WorkerPin {
-  const clean: WorkerPin = {
-    agent: pin.agent,
-    model: pin.model,
-    ...(pin.effort && pin.agent !== 'opencode' ? { effort: pin.effort } : {})
-  }
+  const clean: WorkerPin = { agent: pin.agent, model: pin.model, ...(pin.effort ? { effort: pin.effort } : {}) }
   writeJsonFile(pinPath(ws), clean)
   return clean
 }
 
-/** One-time move of a pre-shared-claim `<ws>/.mte/planner.json` to the shared location (only when no shared claim exists). */
-function migrateLegacyPlanner(ws: string): void {
+/** One-time move of an old `<ws>/.mte/planner.json` into the worktree's git dir (only when no claim exists there). Takes the already-resolved claim path: one rev-parse per call, not one per helper. */
+function migrateLegacyPlanner(ws: string, shared: string): void {
   const legacy = legacyPlannerPath(ws)
-  const shared = plannerPath(ws)
   if (legacy === shared || !existsSync(legacy)) {
     return
   }
@@ -156,12 +144,13 @@ function migrateLegacyPlanner(ws: string): void {
 }
 
 export function readPlanner(ws: string): PlannerClaim | null {
-  migrateLegacyPlanner(ws)
-  const raw = readJsonFile(plannerPath(ws))
+  const path = plannerPath(ws)
+  migrateLegacyPlanner(ws, path)
+  const raw = readJsonFile(path)
   if (raw === null) {
     return null
   }
-  const identity = withIdentity(optString(raw.sessionId), optString(raw.terminalHandle), optString(raw.opencodeSessionId))
+  const identity = withIdentity(optString(raw.sessionId), optString(raw.terminalHandle))
   return hasIdentity(identity) ? { ...identity, claimedAt: optString(raw.claimedAt) ?? '' } : null
 }
 
@@ -171,11 +160,12 @@ export function writePlanner(ws: string, identity: Identity): PlannerClaim {
   return claim
 }
 
-/** Removes the planner claim; true when there was one. */
+/** Removes the planner claim; true when there was one. Works on a corrupt file (it removes without parsing). */
 export function removePlanner(ws: string): boolean {
-  migrateLegacyPlanner(ws)
-  const had = existsSync(plannerPath(ws))
-  rmSync(plannerPath(ws), { force: true })
+  const path = plannerPath(ws)
+  migrateLegacyPlanner(ws, path)
+  const had = existsSync(path)
+  rmSync(path, { force: true })
   return had
 }
 

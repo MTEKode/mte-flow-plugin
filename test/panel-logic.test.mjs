@@ -1,20 +1,19 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
-import { createSearcher, filterRows, fitSelection, goalText, groupRows, iconFor, listKey, modelRows, moveIndex, originIcon } from '../panel/logic.mjs'
+import { claimCallout, createSearcher, filterRows, fitSelection, goalText, groupRows, iconFor, listHints, listKey, modelRows, moveIndex, mteDriftHint, mteRow, originIcon, startNote } from '../panel/logic.mjs'
 
 test('model rows: default first, labels when the CLI gives them, an unlisted current model stays', () => {
-  const info = { takesModel: true, models: [{ id: 'gemini-x-high', label: 'Gemini X (High)' }, { id: 'p/m' }] }
+  const info = { models: [{ id: 'gemini-x-high', label: 'Gemini X (High)' }, { id: 'p/m' }] }
   assert.deepEqual(modelRows(info, ''), [['', 'Default model'], ['gemini-x-high', 'Gemini X (High)'], ['p/m', 'p/m']])
   assert.deepEqual(modelRows(info, 'typed/id').at(-1), ['typed/id', 'typed/id'])
-  assert.deepEqual(modelRows({ takesModel: false, models: [{ id: 'p/m' }] }, 'p/m'), [['', 'Agent default']])
 })
 
 test('model rows are grouped by origin (the provider prefix); unprefixed rows stay on top, ungrouped', () => {
-  const rows = [['', 'Default model'], ['zai-coding-plan/glm-5.3', 'zai-coding-plan/glm-5.3'], ['alibaba-coder-plan/kimi-k2.5', 'alibaba-coder-plan/kimi-k2.5'], ['zai-coding-plan/glm-5.4', 'zai-coding-plan/glm-5.4'], ['nvidia/meta/llama', 'nvidia/meta/llama']]
+  const rows = [['', 'Default model'], ['bailian-token-plan-personal/glm-5.3', 'bailian-token-plan-personal/glm-5.3'], ['alibaba-coder-plan/kimi-k2.5', 'alibaba-coder-plan/kimi-k2.5'], ['bailian-token-plan-personal/glm-5.4', 'bailian-token-plan-personal/glm-5.4'], ['nvidia/meta/llama', 'nvidia/meta/llama']]
   assert.deepEqual(groupRows(rows), [
     { origin: null, rows: [['', 'Default model']] },
-    { origin: 'zai-coding-plan', rows: [['zai-coding-plan/glm-5.3', 'zai-coding-plan/glm-5.3'], ['zai-coding-plan/glm-5.4', 'zai-coding-plan/glm-5.4']] },
+    { origin: 'bailian-token-plan-personal', rows: [['bailian-token-plan-personal/glm-5.3', 'bailian-token-plan-personal/glm-5.3'], ['bailian-token-plan-personal/glm-5.4', 'bailian-token-plan-personal/glm-5.4']] },
     { origin: 'alibaba-coder-plan', rows: [['alibaba-coder-plan/kimi-k2.5', 'alibaba-coder-plan/kimi-k2.5']] },
     { origin: 'nvidia', rows: [['nvidia/meta/llama', 'nvidia/meta/llama']] }
   ])
@@ -22,30 +21,29 @@ test('model rows are grouped by origin (the provider prefix); unprefixed rows st
 })
 
 test('model search ANDs the words over id and label; origins map to a shipped icon or none', async () => {
-  const rows = [['', 'Default model'], ['zai-coding-plan/glm-5.3', 'zai-coding-plan/glm-5.3'], ['gemini-4-neon-high', 'Gemini 4 Neon (High)'], ['alibaba-coder-plan/glm-5', 'alibaba-coder-plan/glm-5']]
-  assert.deepEqual(filterRows(rows, 'GLM zai').map((r) => r[0]), ['zai-coding-plan/glm-5.3'])
+  const rows = [['', 'Default model'], ['bailian-token-plan-personal/glm-5.3', 'bailian-token-plan-personal/glm-5.3'], ['gemini-4-neon-high', 'Gemini 4 Neon (High)'], ['alibaba-coder-plan/glm-5', 'alibaba-coder-plan/glm-5']]
+  assert.deepEqual(filterRows(rows, 'GLM bailian').map((r) => r[0]), ['bailian-token-plan-personal/glm-5.3'])
   assert.deepEqual(filterRows(rows, 'neon (high)').map((r) => r[0]), ['gemini-4-neon-high'])
   assert.equal(filterRows(rows, '  ').length, 4)
-  for (const origin of ['alibaba-coder-plan', 'bailian-token-plan-personal', 'zai-coding-plan', 'claude-code', 'opencode', 'nvidia']) {
+  for (const origin of ['alibaba-coder-plan', 'bailian-token-plan-personal', 'claude-code', 'nvidia']) {
     assert.ok((await readFile(new URL(`../panel/${originIcon(origin)}`, import.meta.url))).length > 0, origin)
   }
   assert.equal(originIcon('bailian-token-plan-personal'), 'icons/alibaba.png')
   assert.equal(originIcon('swiftlm'), null)
 })
 
-test('selection is fitted to the harness: no model where it runs its own, effort only with a model it supports', () => {
-  const claude = { takesModel: true, efforts: ['low', 'high'] }
+test('selection is fitted to the harness: effort only with a model it supports', () => {
+  const claude = { efforts: ['low', 'high'] }
   assert.deepEqual(fitSelection({ agent: 'claude', model: 'sonnet', effort: 'high' }, claude), { agent: 'claude', model: 'sonnet', effort: 'high' })
   assert.equal(fitSelection({ model: '', effort: 'high' }, claude).effort, '')
   assert.equal(fitSelection({ model: 'sonnet', effort: 'max' }, claude).effort, '')
-  assert.deepEqual(fitSelection({ model: 'p/m', effort: 'high' }, { takesModel: false, efforts: [] }), { model: '', effort: '' })
+  assert.deepEqual(fitSelection({ model: 'p/m', effort: 'high' }, { efforts: [] }), { model: 'p/m', effort: '' })
 })
 
-test('every harness icon the panel names ships in panel/icons; opencode2 reuses opencode; unknown gets none', async () => {
-  for (const id of ['claude', 'opencode', 'opencode2', 'codex', 'antigravity', 'pi', 'droid', 'gemini']) {
+test('every harness icon the panel names ships in panel/icons; unknown gets none', async () => {
+  for (const id of ['claude', 'antigravity']) {
     assert.ok((await readFile(new URL(`../panel/${iconFor(id)}`, import.meta.url))).length > 0, id)
   }
-  assert.equal(iconFor('opencode2'), 'icons/opencode.png')
   assert.equal(iconFor('someday'), null)
 })
 
@@ -92,4 +90,64 @@ test('AC3: the panel only uses --orca-* colors (no hard-coded hex)', async () =>
     const bare = text.replace(/var\([^()]*(?:\([^()]*\)[^()]*)*\)/g, '')
     assert.ok(!/\b(?:rgba?|hsla?)\(/i.test(bare), `${f} has a color function literal`)
   }
+})
+
+test('AC1: the panel keeps no poller of its own — the worker posts state.changed', async () => {
+  const text = await readFile(new URL('../panel/panel.js', import.meta.url), 'utf8')
+  assert.ok(!text.includes('setInterval'), 'panel.js must not poll; the worker notifies it')
+})
+
+test('AC10: the goal combobox announces the highlighted option; model options get ids too', async () => {
+  const text = await readFile(new URL('../panel/panel.js', import.meta.url), 'utf8')
+  assert.match(text, /goal\.setAttribute\('aria-activedescendant', items\.length \? `go-\$\{gi\}` : ''\)/)
+  assert.match(text, /input\.setAttribute\('aria-activedescendant'/)
+  assert.match(text, /id: `go-\$\{i\}`/)
+  assert.match(text, /id: `mo-\$\{pid\}-\$\{i\}`/)
+})
+
+test('AC5: a live foreign claim shows the conflict callout before Start; own claims stay quiet; corrupt ones report', () => {
+  const conflict = claimCallout({ claim: { claimed: true, holder: 'session s9' } })
+  assert.deepEqual([conflict.tone, conflict.title, conflict.replace, conflict.body.includes('session s9')], ['', 'A planner is already running here', true, true])
+  assert.equal(claimCallout({ claim: { claimed: true, holder: 'session s9', mine: true } }), null)
+  assert.equal(claimCallout({ claim: { claimed: false } }), null)
+  const corrupt = claimCallout({ claimError: '`mte planner show` failed (exited with 1): claim file is corrupt; run `mte planner release`' })
+  assert.equal(corrupt.tone, 'danger')
+  assert.equal(corrupt.replace, undefined)
+  assert.match(corrupt.body, /corrupt/)
+  assert.match(claimCallout(null, 'terminal term_1').body, /terminal term_1/)
+})
+
+test('AC8: the fallback note names exactly the selections the host launcher dropped', () => {
+  const plain = startNote({ surface: 'terminal' })
+  assert.equal(plain, 'Planner started in a new terminal.')
+  const dropped = startNote({ surface: 'terminal', fallback: true, dropped: ['model opus', 'effort high', 'chat surface'] })
+  assert.match(dropped, /the orca CLI was unavailable: dropped model opus, effort high, chat surface/)
+  const chat = startNote({ surface: 'chat', fallback: false, dropped: [] })
+  assert.equal(chat, 'Planner started in a native chat.')
+})
+
+test('AC9: the truncation note states the real 4000-char cap', () => {
+  assert.match(startNote({ surface: 'chat', truncated: true }), /truncated to fit the 4000-char prompt cap/)
+  assert.ok(!startNote({ surface: 'chat', truncated: true }).includes('4096'))
+})
+
+test('AC4: the panel row shows the installed mte version; drift below REQUIRED raises a warning hint pointing at Repair setup', () => {
+  assert.equal(mteRow({ missing: false, version: '0.8.0' }), 'mte 0.8.0')
+  assert.equal(mteRow({ missing: false, version: null }), null)
+  assert.equal(mteRow({ missing: true, message: 'gone' }), null)
+  const drift = mteDriftHint({ missing: false, version: '0.7.0', required: '0.8.0', drift: true })
+  assert.equal(drift.tone, 'warning')
+  assert.match(drift.title, /0\.7\.0 is older than 0\.8\.0/)
+  assert.match(drift.body, /Repair setup/)
+  assert.equal(mteDriftHint({ missing: false, version: '0.8.0', required: '0.8.0', drift: false }), null)
+  assert.equal(mteDriftHint({ missing: false, version: null, required: '0.8.0', drift: false }), null)
+  assert.equal(mteDriftHint({ missing: true, version: null, required: '0.8.0', drift: false }), null)
+})
+
+test('AC3: failed harness/model listings become hint lines (goal.search hint pattern)', () => {
+  assert.deepEqual(listHints({ harnessError: 'orca CLI missing', models: { antigravity: { error: 'agy: offline' } } }), [
+    'Could not list the installed harnesses (orca CLI missing); claude and antigravity stay selectable.',
+    'Could not list antigravity models (agy: offline); type a model id instead.'
+  ])
+  assert.deepEqual(listHints({ harnessError: null, models: { claude: { models: [], error: null } } }), [])
 })

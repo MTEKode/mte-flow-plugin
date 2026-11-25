@@ -2,17 +2,11 @@
 export const KIND_LABEL = { linear: 'Linear', pr: 'PR', issue: 'Issue' }
 
 // icons shipped in panel/icons (the frame cannot load remote images); other harnesses get a letter badge
-const HARNESS_ICONS = ['claude', 'opencode', 'codex', 'antigravity', 'pi', 'droid', 'gemini']
-export function iconFor(agent) {
-  const id = agent === 'opencode2' ? 'opencode' : agent
-  return HARNESS_ICONS.includes(id) ? `icons/${id}.png` : null
-}
+const HARNESS_ICONS = ['claude', 'antigravity']
+export const iconFor = (agent) => (HARNESS_ICONS.includes(agent) ? `icons/${agent}.png` : null)
 
 /** `[value, label]` rows of the model selector; a current model the harness did not list stays selectable. */
 export function modelRows(info, current) {
-  if (!info.takesModel) {
-    return [['', 'Agent default']]
-  }
   const rows = [['', 'Default model'], ...info.models.map((m) => [m.id, m.label ?? m.id])]
   if (current && !info.models.some((m) => m.id === current)) {
     rows.push([current, current])
@@ -20,8 +14,8 @@ export function modelRows(info, current) {
   return rows
 }
 
-// which shipped icon stands for an origin (a provider id such as `zai-coding-plan`); first match wins
-const ORIGIN_ICONS = [[/alibaba|bailian|dashscope|qwen/, 'alibaba'], [/zai|z-ai|zhipu|glm/, 'zai'], [/claude|anthropic/, 'claude'], [/opencode/, 'opencode'], [/nvidia/, 'nvidia'], [/openai|codex/, 'codex'], [/google|gemini/, 'gemini']]
+// which shipped icon stands for an origin (a provider id such as `alibaba-coder-plan`); first match wins
+const ORIGIN_ICONS = [[/alibaba|bailian|dashscope|qwen/, 'alibaba'], [/claude|anthropic/, 'claude'], [/nvidia/, 'nvidia']]
 export function originIcon(origin) {
   const hit = ORIGIN_ICONS.find(([re]) => re.test(String(origin).toLowerCase()))
   return hit ? `icons/${hit[1]}.png` : null
@@ -37,7 +31,7 @@ export function filterRows(rows, q) {
 }
 
 /**
- * Groups model rows by origin: the `provider/` prefix of a model id (opencode, pi) is the plan or account it bills.
+ * Groups model rows by origin: the `provider/` prefix of a model id is the plan or account it bills.
  * Rows without a prefix come first, ungrouped. Labels keep the full id so the closed selector still names the origin.
  */
 export function groupRows(rows) {
@@ -53,9 +47,9 @@ export function groupRows(rows) {
   return groups
 }
 
-/** Drops what the harness cannot take: a model where it runs its own, an effort it lacks or one without a model. */
+/** Drops what the harness cannot take: an effort it lacks or one without a model. */
 export function fitSelection(sel, info) {
-  const model = info.takesModel ? sel.model || '' : ''
+  const model = sel.model || ''
   return { ...sel, model, effort: model && info.efforts.includes(sel.effort) ? sel.effort : '' }
 }
 
@@ -92,6 +86,61 @@ export function listKey(index, n, key) {
 
 /** What selecting a suggestion writes into the goal: "<id> <title>" plus the URL. */
 export const goalText = (item) => `${item.id} ${item.title}\n${item.url}`
+
+/** Char cap of the launched prompt (worker/lib.mjs PROMPT_MAX; the panel frame cannot import it). */
+export const PROMPT_CAP = 4000
+
+/** One-line outcome after a start: where it opened, what a launcher fallback dropped, whether the goal was cut. */
+export function startNote(r) {
+  const where = r.surface === 'chat' ? 'a native chat' : 'a new terminal'
+  const fb = r.dropped?.length
+    ? ` (the orca CLI was unavailable: dropped ${r.dropped.join(', ')})`
+    : r.fallback
+      ? ' (chat was unavailable, fell back to a terminal)'
+      : ''
+  return `${r.replacedStale ? 'The previous planner was closed, so its claim was dropped. ' : ''}Planner started in ${where}${fb}${r.truncated ? `; goal truncated to fit the ${PROMPT_CAP}-char prompt cap` : ''}.`
+}
+
+/** The planner-claim callout: a live foreign claim warns before Start (Replace offered); a corrupt claim only reports. */
+export function claimCallout(snap, heldBy = null) {
+  if (snap?.claimError) {
+    return { tone: 'danger', title: 'Could not read the planner claim', body: snap.claimError }
+  }
+  if (snap?.claim?.claimed && !snap.claim.mine) {
+    return { tone: '', title: 'A planner is already running here', body: `Held by ${snap.claim.holder}. Replacing it cuts that planner off from dispatching workers.`, replace: true }
+  }
+  if (heldBy) {
+    return { tone: '', title: 'A planner is already running here', body: `Held by ${heldBy}. Replacing it cuts that planner off from dispatching workers.`, replace: true }
+  }
+  return null
+}
+
+/** mte row for the panel: the detected CLI version (null when unknown); `worker/lib.mjs checkMte` supplies the fields. */
+export function mteRow({ missing, version }) {
+  return missing || !version ? null : `mte ${version}`
+}
+
+/** Drift hint callout: the installed mte is below what this plugin pins (possible with manual installs); warning tone, points at Repair setup. */
+export function mteDriftHint({ missing, version, required, drift }) {
+  if (missing || !version || !drift) {
+    return null
+  }
+  return { tone: 'warning', title: `mte ${version} is older than ${required}`, body: 'This plugin is built for mte ' + required + '. Press Repair setup to install it (or run the npm command in the mte-binary setting).' }
+}
+
+/** Hint lines for failed harness/model listings (the goal.search hint pattern: muted text, never a silent empty list). */
+export function listHints({ harnessError, models }) {
+  const hints = []
+  if (harnessError) {
+    hints.push(`Could not list the installed harnesses (${harnessError}); claude and antigravity stay selectable.`)
+  }
+  for (const [agent, info] of Object.entries(models ?? {})) {
+    if (info?.error) {
+      hints.push(`Could not list ${agent} models (${info.error}); type a model id instead.`)
+    }
+  }
+  return hints
+}
 
 /**
  * Debounced, stale-safe search. `input(q)` schedules a request after `delay` ms; any older request that resolves

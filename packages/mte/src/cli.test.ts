@@ -26,8 +26,8 @@ function mte(args: string[], env: Record<string, string | undefined> = {}) {
 }
 
 /** Drives `mte memory` over stdio: initialize + tools/list, returns the tool names. */
-async function listTools(role: string): Promise<string[]> {
-  const child = spawn(process.execPath, [CLI, 'memory', '--role', role, '--workspace', fixture])
+async function listTools(args: string[] = []): Promise<string[]> {
+  const child = spawn(process.execPath, [CLI, 'memory', ...args, '--workspace', fixture])
   const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]()
   const send = (message: unknown) => child.stdin.write(`${JSON.stringify(message)}\n`)
   const next = async (): Promise<Record<string, any>> => JSON.parse((await lines.next()).value)
@@ -62,30 +62,36 @@ describe('mte cli', () => {
 })
 
 describe('mte memory over stdio', () => {
-  it('exposes only ask_orq to the coder role', async () => {
-    expect(await listTools('coder')).toEqual(['ask_orq'])
-  })
-
-  it('exposes only ask_orq to the validator role', async () => {
-    expect(await listTools('validator')).toEqual(['ask_orq'])
-  })
-
-  it('exposes the full toolkit to the orchestrator role', async () => {
-    const names = await listTools('orchestrator')
-    expect(names).toHaveLength(11)
-    for (const name of ['record_task', 'search_tasks', 'get_task']) {
+  it('exposes the nine-tool toolkit, with the question queue retired', async () => {
+    const names = await listTools()
+    expect(names).toHaveLength(9)
+    for (const name of ['record_decision', 'record_qa', 'search_memory', 'record_task', 'search_tasks', 'get_task']) {
       expect(names).toContain(name)
     }
-    expect(names).not.toContain('ask_orq')
-    expect(names).toContain('record_decision')
-    expect(names).toContain('answer_orq')
+    for (const retired of ['ask_orq', 'answer_orq', 'get_pending_questions']) {
+      expect(names).not.toContain(retired)
+    }
+  })
+
+  it('accepts --role orchestrator (old .mcp.json installs) and starts', async () => {
+    expect(await listTools(['--role', 'orchestrator'])).toHaveLength(9)
+  })
+
+  it('rejects the removed coder/validator roles before any protocol byte', () => {
+    for (const role of ['coder', 'validator']) {
+      const res = mte(['memory', '--role', role])
+      expect(res.status).toBe(1)
+      expect(res.stdout).toBe('')
+      expect(res.stderr).toContain('was removed')
+      expect(res.stderr).toContain('orchestrator-only')
+    }
   })
 
   it('rejects an unknown role before any protocol byte', () => {
     const res = mte(['memory', '--role', 'boss'])
     expect(res.status).toBe(1)
     expect(res.stdout).toBe('')
-    expect(res.stderr).toContain('--role must be one of')
+    expect(res.stderr).toContain('was removed')
   })
 })
 

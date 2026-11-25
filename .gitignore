@@ -2,3 +2,5 @@ node_modules/
 .mte/memory.db*
 dist/
 .orca/
+.mte/planner.json
+.mte/guard.log

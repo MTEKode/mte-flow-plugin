@@ -3,6 +3,7 @@ import { readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { detectChecks } from './detect-checks.ts'
+import type { DetectedChecks } from './detect-checks.ts'
 import { runShellSync } from './run-shell-sync.ts'
 
 export type CheckGroup = 'lint' | 'typecheck' | 'test'
@@ -23,6 +24,8 @@ export type RunChecksOptions = {
   tailLines?: number
   only?: readonly CheckGroup[]
   onProgress?: (line: string) => void
+  /** Pre-computed detection; when absent, runChecks detects the workspace itself. */
+  detected?: DetectedChecks
 }
 
 const GROUP_ORDER: readonly CheckGroup[] = ['lint', 'typecheck', 'test']
@@ -69,7 +72,7 @@ function skippedGroup(group: CheckGroup): CheckGroupResult {
 export function runChecks(options: RunChecksOptions): CheckGroupResult[] {
   const timeoutSeconds = options.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS
   const tailLines = options.tailLines ?? DEFAULT_TAIL_LINES
-  const detected = detectChecks(options.workspaceRoot)
+  const detected = options.detected ?? detectChecks(options.workspaceRoot)
   const results: CheckGroupResult[] = []
   for (const group of chosenGroups(options.only)) {
     results.push(runOneGroup(group, detected[group], options, timeoutSeconds, tailLines))

@@ -36,7 +36,7 @@ export const BOOLEAN_FLAGS: Set<string> = new Set(['json', 'failed', 'detect', '
 const HELP = `mte - MTE Flow engine
 
 Usage:
-  mte memory [--role orchestrator|coder|validator] [--workspace <path>]   stdio MCP memory server
+  mte memory [--role orchestrator] [--workspace <path>]                  stdio MCP memory server (planner-only; coder/validator roles removed)
   mte check [--json]                                                      run lint/typecheck/test; exit code = failing groups
   mte deploy-check config [--json]                                        show deploy-check config (never the password)
   mte deploy-check validated --summary <text> [--failed]                  report on the linked Linear issue
@@ -45,8 +45,8 @@ Usage:
   mte pin set --agent <a> --model <m> [--effort <e>] | mte pin get --json
   mte planner claim [--force] [--session-id <id>] [--terminal-handle <h>] | mte planner show --json
   mte planner release [--workspace <path>]                                drop the planner claim (next claim needs no --force)
-  mte install [--agents claude,opencode] [--workspace <path>]             wire skill, hook/plugin and memory MCP
-  mte install --user [--agents claude,opencode]                           install the mte-flow skill in ~/.claude/skills and ~/.agents/skills
+  mte install [--workspace <path>]                                        wire skill, Claude hook and memory MCP
+  mte install --user                                                      install the mte-flow skill in ~/.claude/skills
   mte --version | mte help
 `
 

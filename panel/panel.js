@@ -1,5 +1,5 @@
 // MTE Flow panel (html, isolated frame): all data comes from the worker through orca.plugin.request.
-import { createSearcher, filterRows, fitSelection, goalText, groupRows, iconFor, KIND_LABEL, listKey, modelRows, originIcon, originOf } from './logic.mjs'
+import { claimCallout, createSearcher, filterRows, fitSelection, goalText, groupRows, iconFor, KIND_LABEL, listHints, listKey, modelRows, mteDriftHint, mteRow, originIcon, originOf, startNote } from './logic.mjs'
 
 const $ = (id) => document.getElementById(id)
 const req = (name, params = {}) => orca.plugin.request(name, params, { timeoutMs: 120000 })
@@ -9,7 +9,7 @@ const el = (tag, props = {}, ...kids) => {
   return n
 }
 
-const st = { snap: null, harnesses: [], models: {}, planner: null, worker: null, busy: null, notice: null, claimedBy: null, prefilled: false }
+const st = { snap: null, harnesses: [], harnessError: null, models: {}, planner: null, worker: null, busy: null, notice: null, claimedBy: null, prefilled: false }
 
 // ---- harness / model / effort selectors (harness, surface and effort are native selects; the model list is searchable) ----
 const opt = (value, ...kids) => el('option', { value }, ...kids)
@@ -17,6 +17,7 @@ const badge = (src, name) => (src ? el('img', { src, alt: '', width: 16, height:
 const harnessIcon = (h) => badge(iconFor(h.id), h.name)
 
 /** Searchable model list: rows grouped under their origin (with its icon); typing an unlisted id offers it as a row. */
+let popSeq = 0
 function modelPicker(field, title, { rows, get, set }) {
   const btn = el('button', { type: 'button', className: 'picker', ariaLabel: `${title} model`, ariaHasPopup: 'listbox' })
   let pop = null
@@ -32,6 +33,7 @@ function modelPicker(field, title, { rows, get, set }) {
   const choose = (value) => { set(value); close(true) }
   btn.onclick = () => {
     if (pop) return close(true)
+    const pid = ++popSeq
     const input = el('input', { placeholder: 'Search models, or type a model id', ariaLabel: `Search ${title} models` })
     const list = el('div', { role: 'listbox' })
     pop = el('div', { className: 'pop' }, input, list)
@@ -47,13 +49,15 @@ function modelPicker(field, title, { rows, get, set }) {
         ...groups.flatMap((g) => [
           ...(g.origin && g.rows.length ? [el('div', { className: 'group' }, badge(originIcon(g.origin), g.origin), el('span', { textContent: g.origin }))] : []),
           ...g.rows.map(([value, text]) => {
-            const row = el('div', { className: 'opt' + (at++ === active ? ' active' : ''), role: 'option', ariaSelected: String(value === (get() || '')) }, el('span', { className: 't', textContent: text }))
+            const i = at++
+            const row = el('div', { id: `mo-${pid}-${i}`, className: 'opt' + (i === active ? ' active' : ''), role: 'option', ariaSelected: String(value === (get() || '')) }, el('span', { className: 't', textContent: text }))
             row.onmousedown = (e) => { e.preventDefault(); choose(value) }
             return row
           })
         ]),
         ...(shown.length ? [] : [el('div', { className: 'opt muted', textContent: 'No models match.' })])
       )
+      input.setAttribute('aria-activedescendant', shown.length ? `mo-${pid}-${active}` : '')
       list.querySelector('.active')?.scrollIntoView({ block: 'nearest' })
     }
     input.oninput = () => { active = 0; draw() }
@@ -79,7 +83,7 @@ function chooser(field, key, title, withSurface) {
   const harness = el('select', { ariaLabel: `${title} harness` })
   const surface = el('select', { ariaLabel: `${title} surface`, className: 'fit' }, opt('chat', 'Chat'), opt('terminal', 'Terminal'))
   const effort = el('select', { ariaLabel: `${title} effort`, className: 'fit' })
-  const info = () => st.models[st[key].agent] ?? { models: [], efforts: [], takesModel: true }
+  const info = () => st.models[st[key].agent] ?? { models: [], efforts: [] }
   const model = modelPicker(field, title, { rows: () => modelRows(info(), st[key].model), get: () => st[key].model, set: (v) => { st[key].model = v; draw() } })
   field.append(el('div', { className: 'row' }, harness, ...(withSurface ? [surface] : [])), el('div', { className: 'row' }, model.btn, effort))
 
@@ -87,13 +91,12 @@ function chooser(field, key, title, withSurface) {
     const c = st[key]
     if (!c) return
     if (st.models[c.agent]) Object.assign(c, fitSelection(c, st.models[c.agent]))
-    const { efforts, takesModel } = info()
+    const { efforts } = info()
     const listed = st.harnesses.some((h) => h.id === c.agent) ? st.harnesses : [{ id: c.agent, name: c.agent }, ...st.harnesses]
     harness.replaceChildren(el('button', {}, el('selectedcontent')), ...listed.map((h) => opt(h.id, harnessIcon(h), el('span', { textContent: h.name }))))
     harness.value = c.agent
     surface.value = c.surface
     model.label()
-    model.btn.disabled = !takesModel
     effort.replaceChildren(opt('', 'Default effort'), ...efforts.map((e) => opt(e, e)))
     effort.value = c.effort || ''
     effort.hidden = efforts.length === 0
@@ -114,17 +117,18 @@ const goal = $('goal')
 const goalList = $('goal-list')
 let items = []
 let gi = 0
-const closeGoal = () => { goalList.hidden = true; goal.setAttribute('aria-expanded', 'false'); items = [] }
+const closeGoal = () => { goalList.hidden = true; goal.setAttribute('aria-expanded', 'false'); goal.setAttribute('aria-activedescendant', ''); items = [] }
 function drawGoal() {
   goalList.replaceChildren(
     ...items.map((it, i) => {
-      const row = el('div', { className: 'opt' + (i === gi ? ' active' : ''), role: 'option' }, el('span', { className: 'tag', textContent: KIND_LABEL[it.kind] }), el('code', { textContent: it.id }), el('span', { className: 't', textContent: it.title }))
+      const row = el('div', { id: `go-${i}`, className: 'opt' + (i === gi ? ' active' : ''), role: 'option' }, el('span', { className: 'tag', textContent: KIND_LABEL[it.kind] }), el('code', { textContent: it.id }), el('span', { className: 't', textContent: it.title }))
       row.onmousedown = (e) => { e.preventDefault(); pickGoal(it) }
       return row
     })
   )
   goalList.hidden = items.length === 0
   goal.setAttribute('aria-expanded', String(items.length > 0))
+  goal.setAttribute('aria-activedescendant', items.length ? `go-${gi}` : '')
   goalList.querySelector('.active')?.scrollIntoView({ block: 'nearest' })
 }
 function pickGoal(it) { goal.value = goalText(it); closeGoal(); search.cancel(); goal.focus() }
@@ -168,7 +172,7 @@ async function act(name, run, success) {
 }
 const startRun = (replace = false) =>
   act('start', () => req('run.start', { goal: goal.value, plannerAgent: st.planner.agent, plannerModel: st.planner.model || '', plannerSurface: st.planner.surface, plannerEffort: st.planner.effort || '', workerAgent: st.worker.agent, workerModel: st.worker.model || '', workerEffort: st.worker.effort || '', replace }),
-    (r) => `${r.replacedStale ? 'The previous planner was closed, so its claim was dropped. ' : ''}Planner started in ${r.surface === 'chat' ? 'a native chat' : 'a new terminal'}${r.fallback ? ' (chat was unavailable, fell back to a terminal)' : ''}${r.truncated ? '; goal truncated to fit the 4096-char prompt cap' : ''}.`)
+    (r) => startNote(r))
 $('start').onclick = () => startRun(false)
 $('install').onclick = () => act('install', () => req('workspace.install'), () => 'MTE installed in this workspace.')
 $('repair').onclick = () => act('repair', () => req('setup.repair'), () => 'Setup finished: mte and the mte-flow skill are ready.')
@@ -191,10 +195,13 @@ async function load() {
   render()
 }
 async function loadLists() {
-  st.harnesses = (await req('harness.list')).harnesses
+  const hl = await req('harness.list').catch(() => ({ harnesses: [], error: 'the harness.list request failed' }))
+  st.harnesses = hl.harnesses ?? []
+  st.harnessError = hl.error ?? null
   drawChoosers()
-  // each harness fills in as its own CLI answers (agy and pi take seconds)
-  await Promise.all(st.harnesses.map(async (h) => { st.models[h.id] = await req('models.list', { agent: h.id }).catch(() => ({ models: [], efforts: [], takesModel: true })); drawChoosers() }))
+  // each harness fills in as its own CLI answers (agy takes seconds); a failed probe reports its error
+  await Promise.all(st.harnesses.map(async (h) => { st.models[h.id] = await req('models.list', { agent: h.id }).catch((e) => ({ models: [], efforts: [], error: String(e?.message ?? e) })); drawChoosers() }))
+  render()
 }
 
 function callout(tone, title, body, ...buttons) {
@@ -212,15 +219,23 @@ function render() {
   const out = []
   if (st.loadError) out.push(callout('danger', 'Could not reach the MTE worker', st.loadError))
   if (s?.setup.status === 'running') out.push(callout('', 'Setting up MTE', s.setup.message))
+  // npm i -g never runs unattended: the person consents here (or dismisses; Repair setup still works)
+  if (s?.setup.status === 'needs-consent') out.push(callout('', 'Setup needs your OK', s.setup.message, btn('Run setup', () => act('repair', () => req('setup.repair'), () => 'Setup finished: mte and the mte-flow skill are ready.')), btn('Not now', () => act('decline', () => req('setup.dismiss'), () => 'Skipped: press Repair setup whenever you want it run.'))))
   if (s?.setup.status === 'error') out.push(callout('danger', 'MTE setup failed', s.setup.message, btn('Repair setup', () => act('repair', () => req('setup.repair'), () => 'Setup finished.'))))
   if (s && !s.depthReminderDismissed) out.push(callout('', 'One manual setting', 'Set Settings → Orchestration → Nested worker depth = 1 so dispatched workers cannot start workers.', btn('Dismiss', () => act('dismiss', () => req('reminder.dismiss'), () => 'Reminder dismissed.'))))
   if (s?.mte.missing) out.push(callout('danger', s.mte.unusable ? 'mte binary not usable' : 'mte binary not found', s.mte.message ?? ''))
-  if (st.claimedBy) out.push(callout('', 'A planner is already running here', `Held by ${st.claimedBy}. Replacing it cuts that planner off from dispatching workers.`, btn('Replace planner', () => startRun(true))))
+  const drift = s ? mteDriftHint(s.mte) : null
+  if (drift) out.push(callout(drift.tone, drift.title, drift.body))
+  const conflict = claimCallout(s, st.claimedBy)
+  if (conflict) out.push(callout(conflict.tone, conflict.title, conflict.body, ...(conflict.replace ? [btn('Replace planner', () => startRun(true))] : [])))
+  const hints = listHints({ harnessError: st.harnessError, models: st.models })
+  if (hints.length) out.push(el('div', { className: 'muted', textContent: hints.join(' ') }))
   if (st.notice) out.push(callout(st.notice.tone, '', st.notice.text))
   $('notices').replaceChildren(...out)
 
   $('active').textContent = `${s?.activeWorkers ?? 0} active`
-  $('ws').textContent = s?.workspace ? `Workspace: ${s.workspace.name} · ${s.workspace.path}` : 'No workspace focused.'
+  const version = s ? mteRow(s.mte) : null
+  $('ws').textContent = (s?.workspace ? `Workspace: ${s.workspace.name} · ${s.workspace.path}` : 'No workspace focused.') + (version ? ` · ${version}` : '')
   const runs = s?.orchestrators ?? []
   $('runs').replaceChildren(
     ...(runs.length
@@ -242,9 +257,8 @@ function render() {
   $('start').textContent = st.busy === 'start' ? 'Starting…' : 'Start run'
 }
 
+// the worker posts state.changed whenever its poll sees an observable change: the panel never polls itself
 orca.plugin.on('state.changed', () => void load())
 orca.on?.('workspace.changed', () => void load())
 void load()
 void loadLists()
-// workers start and finish without any event reaching the panel
-setInterval(() => { if (st.busy === null) void load() }, 15000)

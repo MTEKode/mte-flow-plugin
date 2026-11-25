@@ -22,12 +22,12 @@ const TRIGGER_NAMES = [
   'tasks_fts_after_update'
 ]
 
-const ALL_TABLES = ['decisions', 'meta', 'notes', 'notes_fts', 'qa_fts', 'qa_log', 'questions', 'tasks', 'tasks_fts']
+const ALL_TABLES = ['decisions', 'meta', 'notes', 'notes_fts', 'qa_fts', 'qa_log', 'tasks', 'tasks_fts']
 
 function tableNames(db: SqliteConnection): unknown[] {
   return db
     .prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('decisions', 'qa_log', 'qa_fts', 'questions', 'notes', 'notes_fts', 'meta', 'tasks', 'tasks_fts') ORDER BY name"
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('decisions', 'qa_log', 'qa_fts', 'notes', 'notes_fts', 'meta', 'tasks', 'tasks_fts') ORDER BY name"
     )
     .all()
     .map((row) => row.name)
@@ -41,10 +41,12 @@ function triggerNames(db: SqliteConnection): unknown[] {
 }
 
 describe('memory database schema', () => {
-  it('creates the nine tables and nine FTS triggers in :memory:', () => {
+  it('creates the eight tables and nine FTS triggers in :memory:', () => {
     const db = openMemoryDatabase(':memory:')
     expect(tableNames(db)).toEqual(ALL_TABLES)
     expect(triggerNames(db)).toEqual(TRIGGER_NAMES)
+    // The retired question queue: fresh DBs never get the table; existing DBs keep it orphaned.
+    expect(db.prepare("SELECT 1 AS found FROM sqlite_master WHERE name = 'questions'").get()).toBeUndefined()
     db.close()
   })
 
@@ -86,7 +88,6 @@ describe('memory database schema', () => {
         DROP TRIGGER IF EXISTS notes_fts_after_insert;
         DROP TRIGGER IF EXISTS notes_fts_after_delete;
         DROP TRIGGER IF EXISTS notes_fts_after_update;
-        DROP TABLE IF EXISTS questions;
         DROP TABLE IF EXISTS notes;
         DROP TABLE IF EXISTS notes_fts;
       `)
@@ -97,7 +98,6 @@ describe('memory database schema', () => {
       const store = createMemoryStore(reopened)
       expect(store.get_active_decisions()).toEqual([decision])
       expect(store.search_qa('persistence').map((row) => row.id)).toEqual([qa.id])
-      expect(store.get_pending_questions()).toEqual([])
       store.close()
     })
   })
@@ -247,78 +247,6 @@ describe('memory store', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0]?.answer).toBe('kubernetes is the corrected answer')
     expect(store.search_qa('two')).toEqual([])
-  })
-
-  it('asks a question as pending with an ISO timestamp and validates role and fields', () => {
-    const row = store.ask_question('coder', 'T-0002:s1', 'roles', 'can coders read memory?')
-    expect(row.id).toBeGreaterThan(0)
-    expect(row.status).toBe('pending')
-    expect(row.asked_by).toBe('coder')
-    expect(row.asked_at).toMatch(ISO_TIMESTAMP)
-    expect(row.answered_at).toBeNull()
-    const validator = store.ask_question('validator', 'T-0002:s2', 'roles', 'can validators ask?')
-    expect(validator.asked_by).toBe('validator')
-    expect(() => store.ask_question('coder', '', 't', 'q')).toThrow(TypeError)
-    expect(() => store.ask_question('coder', 's', '   ', 'q')).toThrow(TypeError)
-    expect(() => store.ask_question('coder', 's', 't', '  ')).toThrow(TypeError)
-    // Deliberately invalid runtime role; Reflect.apply bypasses the typed signature without assertions.
-    // oxlint-disable-next-line anti-slop/no-reflect-apply -- deliberate untyped call to prove the runtime guard.
-    expect(() => Reflect.apply(store.ask_question, store, ['orchestrator', 's', 't', 'q'])).toThrow(
-      'role must be coder or validator'
-    )
-  })
-
-  it('lists pending questions oldest first and excludes answered ones', () => {
-    const first = store.ask_question('coder', 's1', 'ordering', 'first question')
-    const second = store.ask_question('validator', 's2', 'ordering', 'second question')
-    store.answer_question(first.id, 'first answer')
-    const third = store.ask_question('coder', 's3', 'ordering', 'third question')
-    const pending = store.get_pending_questions()
-    expect(pending.map((row) => row.id)).toEqual([second.id, third.id])
-    expect(pending.map((row) => row.status)).toEqual(['pending', 'pending'])
-  })
-
-  it('answers a question into qa_log once and reports unknown ids', () => {
-    const asked = store.ask_question(
-      'coder',
-      'T-0002:s4',
-      'storage',
-      'where does the memory db live?'
-    )
-    const { question, qa } = store.answer_question(asked.id, 'under .mte/memory.db per workspace')
-    expect(question.id).toBe(asked.id)
-    expect(question.status).toBe('answered')
-    expect(question.answered_at).toMatch(ISO_TIMESTAMP)
-    expect(qa.step_id).toBe(asked.step_id)
-    expect(qa.topic).toBe(asked.topic)
-    expect(qa.question).toBe(asked.question)
-    expect(qa.answer).toBe('under .mte/memory.db per workspace')
-    expect(store.search_qa('memory workspace').map((row) => row.id)).toEqual([qa.id])
-    expect(() => store.answer_question(asked.id, 'answered again')).toThrow(
-      'question already answered'
-    )
-    expect(db.prepare('SELECT COUNT(*) AS total FROM qa_log').get()?.total).toBe(1)
-    expect(() => store.answer_question(999, 'nope')).toThrow('question not found: 999')
-    expect(() => store.answer_question(0, 'a')).toThrow(TypeError)
-    expect(() => store.answer_question(1.5, 'a')).toThrow(TypeError)
-    const other = store.ask_question('coder', 's5', 'storage', 'another question?')
-    expect(() => store.answer_question(other.id, '   ')).toThrow(TypeError)
-    expect(store.get_pending_questions().map((row) => row.id)).toEqual([other.id])
-  })
-
-  it('keeps pending questions invisible to search_qa', () => {
-    store.ask_question('coder', 's6', 'secret-topic', 'unanswered question about xyzzy?')
-    expect(store.search_qa('xyzzy')).toEqual([])
-    expect(store.search_qa('secret-topic')).toEqual([])
-  })
-
-  it('rolls the answer transaction back when the qa insert fails', () => {
-    const asked = store.ask_question('coder', 's7', 'rollback', 'question about rollback?')
-    // Dropping qa_fts makes the qa_log insert trigger fail mid-transaction.
-    db.exec('DROP TABLE qa_fts')
-    expect(() => store.answer_question(asked.id, 'answer about rollback')).toThrow()
-    expect(store.get_pending_questions().map((row) => row.id)).toEqual([asked.id])
-    expect(db.prepare('SELECT COUNT(*) AS total FROM qa_log').get()?.total).toBe(0)
   })
 
   it('saves a note with an ISO timestamp and validates its fields', () => {

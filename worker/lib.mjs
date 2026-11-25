@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 export const PROMPT_MAX = 4000
 export const TRUNCATION_MARKER = '\n[goal truncated]'
 /** The mte CLI version this plugin release is built for; the setup installs it when `mte` is missing or older. */
-export const REQUIRED_MTE_VERSION = '0.3.0'
+export const REQUIRED_MTE_VERSION = '0.8.0'
 export const MIN_NODE_MAJOR = 24
 export const tarballUrl = (version) =>
   `https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v${version}/mtekode-mte-${version}.tgz`
@@ -36,8 +36,8 @@ const describeChoice = (agent, model, effort) => [agent, model || 'default model
 
 /** One line the planner repeats in its first reply, so the chat itself says which models run the planner and the workers. */
 export function setupNote(settings) {
-  const planner = describeChoice(settings.plannerAgent, takesModel(settings.plannerAgent) ? settings.plannerModel : '', settings.plannerModel && effortsFor(settings.plannerAgent).length ? settings.plannerEffort : '')
-  const worker = describeChoice(settings.workerAgent, takesModel(settings.workerAgent) ? settings.workerModel : '', settings.workerModel && effortsFor(settings.workerAgent).length ? settings.workerEffort : '')
+  const planner = describeChoice(settings.plannerAgent, settings.plannerModel, settings.plannerModel && effortsFor(settings.plannerAgent).length ? settings.plannerEffort : '')
+  const worker = describeChoice(settings.workerAgent, settings.workerModel, settings.workerModel && effortsFor(settings.workerAgent).length ? settings.workerEffort : '')
   return `(Run setup from the MTE Flow panel. Orchestrator: ${planner}. Workers: ${worker}. State both in your first reply.)`
 }
 
@@ -64,7 +64,7 @@ export function winQuote(arg) {
 }
 
 /**
- * How to start `file` on Windows, where npm-installed CLIs (`mte`, `npm`, `opencode`) are `.cmd` shims that Node will
+ * How to start `file` on Windows, where npm-installed CLIs (`mte`, `npm`) are `.cmd` shims that Node will
  * not start by bare name: the full path of the .exe, or a verbatim `cmd.exe /d /s /c` line for a shim. Null when
  * nothing on PATH matches. Never goes through a shell with unquoted text: goals and model ids are user input.
  */
@@ -155,15 +155,10 @@ export function resolveOrcaCli({
 /** Agents whose launch/worker-start accept `--effort`, and the values each takes (panel-v2 feasibility report, section E). */
 export const EFFORTS = {
   claude: ['low', 'medium', 'high', 'xhigh', 'max'],
-  codex: ['low', 'medium', 'high', 'xhigh'],
-  pi: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
   // Orca's own antigravity catalog offers these three for `--effort`
   antigravity: ['low', 'medium', 'high']
 }
 export const effortsFor = (agent) => EFFORTS[agent] ?? []
-/** Harnesses that refuse launch-time `--model`/`--effort` (they run the model from their own config). */
-export const NO_MODEL_AGENTS = ['opencode2', 'droid']
-export const takesModel = (agent) => !NO_MODEL_AGENTS.includes(agent)
 export const SURFACES = ['chat', 'terminal']
 
 /** Reads the plugin settings, with their defaults. */
@@ -228,13 +223,13 @@ async function runMte(deps, settings, stage, args, cwd) {
   return null
 }
 
-/** Always wire both agents: the planner and worker agents are chosen per run, and install is idempotent. */
+/** Wires the Claude skill, hook and memory MCP; install is idempotent. */
 export function installArgs() {
-  return ['install', '--agents', 'claude,opencode']
+  return ['install']
 }
 
 export function pinArgs(settings) {
-  if (!settings.workerModel || !takesModel(settings.workerAgent)) {
+  if (!settings.workerModel) {
     return null
   }
   const args = ['pin', 'set', '--agent', settings.workerAgent, '--model', settings.workerModel]
@@ -264,14 +259,13 @@ export async function installInWorkspace(deps) {
 export function describeClaim(claim) {
   const parts = [
     claim.sessionId && `session ${claim.sessionId}`,
-    claim.terminalHandle && `terminal ${claim.terminalHandle}`,
-    claim.opencodeSessionId && `opencode session ${claim.opencodeSessionId}`
+    claim.terminalHandle && `terminal ${claim.terminalHandle}`
   ].filter(Boolean)
   return parts.join(' / ') || 'an unknown caller'
 }
 
 /** `mte planner show --json`: { claimed: false } or the claim; a result error when it cannot be read. */
-async function readClaim(deps, settings, cwd) {
+export async function readClaim(deps, settings, cwd) {
   let res
   try {
     res = await deps.exec(settings.mteBin, ['planner', 'show', '--json'], { cwd })
@@ -389,7 +383,7 @@ export async function startRun(deps, input = {}) {
 /** argv of `orca agent launch` for the planner (without `--json`, which orcaJson appends); `--focus` so the person sees it start (or fail). `--effort` needs `--model` and an agent that takes one. */
 export function launchArgs(ws, settings, prompt) {
   const args = ['agent', 'launch', '--agent', settings.plannerAgent, '--worktree', `path:${ws.path}`, '--surface', settings.plannerSurface, '--focus']
-  if (settings.plannerModel && takesModel(settings.plannerAgent)) {
+  if (settings.plannerModel) {
     args.push('--model', settings.plannerModel)
     if (settings.plannerEffort && effortsFor(settings.plannerAgent).length) {
       args.push('--effort', settings.plannerEffort)
@@ -415,17 +409,28 @@ async function launchPlanner(deps, ws, settings, prompt) {
     // real Orca reports a chat session as kind 'structured' (handle `structured-agent-session-<uuid>`)
     const kind = result.outcome.kind
     const surface = kind === 'structured' || kind === 'chat' ? 'chat' : kind === 'terminal' ? 'terminal' : settings.plannerSurface
-    return { terminalId: handle, sessionId: result.outcome.sessionId, surface, fallback: surface !== settings.plannerSurface }
+    return { terminalId: handle, sessionId: result.outcome.sessionId, surface, fallback: surface !== settings.plannerSurface, dropped: [] }
   } catch (error) {
     if (error?.code !== 'orca_missing') {
       throw error
     }
   }
+  // the host launcher only takes agent+prompt: name what the panel's selection loses to this fallback
+  const dropped = []
+  if (settings.plannerModel) {
+    dropped.push(`model ${settings.plannerModel}`)
+    if (settings.plannerEffort && effortsFor(settings.plannerAgent).length) {
+      dropped.push(`effort ${settings.plannerEffort}`)
+    }
+  }
+  if (settings.plannerSurface !== 'terminal') {
+    dropped.push(`${settings.plannerSurface} surface`)
+  }
   const { terminalId } = await deps.host.call('agent.launch', { workspaceId: ws.id, agent: settings.plannerAgent, prompt })
-  return { terminalId, surface: 'terminal', fallback: settings.plannerSurface !== 'terminal' }
+  return { terminalId, surface: 'terminal', fallback: settings.plannerSurface !== 'terminal', dropped }
 }
 
-/** `mte` usable? ENOENT means missing; a non-zero `--version` exit (e.g. a global npm install that Node cannot type-strip) means unusable. */
+/** `mte` usable? ENOENT means missing; a non-zero `--version` exit (e.g. a global npm install that Node cannot type-strip) means unusable. On success it reports the detected version and whether it drifts below REQUIRED_MTE_VERSION (possible with manual installs; the panel hints). */
 export async function checkMte(deps, settings) {
   try {
     const res = await deps.exec(settings.mteBin, ['--version'], { timeoutMs: 15_000 })
@@ -437,12 +442,14 @@ export async function checkMte(deps, settings) {
         message: `\`${settings.mteBin} --version\` failed: ${line}. Install it: ${INSTALL_HINT}.`
       }
     }
-    return { missing: false }
+    const version = parseVersion(res.stdout)?.join('.') ?? null
+    return { missing: false, version, required: REQUIRED_MTE_VERSION, drift: version ? compareVersions(version, REQUIRED_MTE_VERSION) < 0 : false }
   } catch (error) {
     if (error && error.code === 'ENOENT') {
       return { missing: true, message: mteMissingError(settings.mteBin).message }
     }
-    return { missing: false }
+    // a check that could not run is not a passing one: never report mte healthy on a swallowed error
+    return { missing: true, unusable: true, message: `\`${settings.mteBin} --version\` could not run: ${String(error?.message ?? error)}. Install it: ${INSTALL_HINT}.` }
   }
 }
 
@@ -539,7 +546,7 @@ async function liveLaunches(deps) {
 
 /**
  * Running orchestrators, each with its active workers: one entry per run that has active workers, plus planners
- * started from the panel that have none yet. A run is tied to its planner through the planner claim of the repo its
+ * started from the panel that have none yet. A run is tied to its planner through the planner claim of the worktree its
  * workers run in; `launch` (what the planner and its workers were started with) is null for planners not started here.
  */
 export async function listOrchestrators(deps) {
@@ -597,9 +604,11 @@ export async function openPanel(deps) {
   return { ok: true, fallback: true }
 }
 
+/** Status-bar text; `warning` when any active worker needs attention (the tooltip names how many). */
 export const statusText = (workers) => {
   const n = workers.length
-  return { n, text: n > 0 ? `MTE ${n}` : 'MTE', tone: n > 0 ? 'accent' : 'neutral' }
+  const attention = workers.filter((w) => w.attention).length
+  return { n, text: n > 0 ? `MTE ${n}` : 'MTE', tone: n > 0 ? (attention ? 'warning' : 'accent') : 'neutral', attention }
 }
 
 /** Numeric `x.y.z` of a version string (`mte --version` prints just that); null when it is not one. */
@@ -622,6 +631,42 @@ export function compareVersions(a, b) {
 
 const setupKey = (version) => `setup:${version}`
 const DEPTH_REMINDER_KEY = 'depthReminderDismissed'
+const CONSENT_KEY = 'setupDeclined'
+const SEED_KEY = 'settingsSeed'
+
+/**
+ * Single-poller helper: posts (the panel's `state.changed` reload) only when the serialized observable
+ * state differs from what was posted last — workers, setup and the status text/tone.
+ */
+export function createPollPoster(post) {
+  let last = null
+  return (state) => {
+    const key = JSON.stringify(state)
+    if (key === last) {
+      return false
+    }
+    last = key
+    post()
+    return true
+  }
+}
+
+/**
+ * Panel choices: stored selections beat the settings, but a settings change makes every stored override
+ * stale — re-seed (drop them). First run: the seed is remembered and the settings win.
+ */
+export async function resolveChoices(storage, settings) {
+  const seed = await storage.get(SEED_KEY)
+  if (seed && JSON.stringify(seed) !== JSON.stringify(settings)) {
+    await storage.set(SEED_KEY, settings)
+    await storage.set('choices', {})
+    return {}
+  }
+  if (!seed) {
+    await storage.set(SEED_KEY, settings)
+  }
+  return (await storage.get('choices')) ?? {}
+}
 
 /** Runs `file args`; ENOENT comes back as `{ missing: true }` instead of throwing. */
 async function tryExec(deps, file, args, opts) {
@@ -641,18 +686,30 @@ const firstLine = (res) => ((res.stderr || res.stdout || '').trim().split('\n')[
  * First-run setup: make sure `mte` >= REQUIRED_MTE_VERSION exists (installing the release tarball with the user's
  * own npm, never sudo), then `mte install --user` for the user-level skill. Remembered per mte version in plugin
  * storage; `force` (the Repair setup button) ignores that memory. `deps.progress(text)` reports each step.
+ * Ok results carry the DETECTED version (what `mte --version` answers), not the required one.
  */
 export async function ensureSetup(deps, { force = false } = {}) {
   const required = REQUIRED_MTE_VERSION
   const progress = (text) => deps.progress?.(text)
-  if (!force && (await deps.storage.get(setupKey(required)))) {
-    return { ok: true, skipped: true, version: required }
-  }
   const settings = await readSettings(deps.host)
+  if (!force && (await deps.storage.get(setupKey(required)))) {
+    // cheap read-only probe: report what is actually installed (it may be newer than required)
+    const detected = parseVersion((await tryExec(deps, settings.mteBin, ['--version'], { timeoutMs: 15_000 })).stdout)?.join('.') ?? null
+    return { ok: true, skipped: true, version: detected ?? required }
+  }
   progress('Checking the mte CLI…')
   let current = await tryExec(deps, settings.mteBin, ['--version'], { timeoutMs: 15_000 })
   let installed = false
   if (current.missing || current.code !== 0 || compareVersions(current.stdout, required) < 0) {
+    // `npm i -g` changes the machine globally: never unattended. Activation reports needs-consent instead;
+    // Run setup and Repair setup call this with force, which is the consent itself. "Not now" (dismiss) stays until then.
+    if (!force) {
+      const detected = parseVersion(current.stdout)?.join('.') ?? null
+      if ((await deps.storage.get(CONSENT_KEY))?.version === required) {
+        return { ok: true, declined: true, version: detected ?? required }
+      }
+      return { ok: true, needsConsent: true, version: detected ?? required, message: `mte ${required} is missing or too old. Installing it runs \`npm i -g\` (a global change) — press Run setup to allow it, or install it yourself: ${INSTALL_HINT}.` }
+    }
     const node = await tryExec(deps, 'node', ['--version'], { timeoutMs: 15_000 })
     const major = parseVersion(node.stdout)?.[0]
     if (node.missing || node.code !== 0 || major === undefined) {
@@ -683,7 +740,7 @@ export async function ensureSetup(deps, { force = false } = {}) {
     return fail('setup', 'user_install_failed', `\`mte install --user\` failed${firstLine(skill) ? `: ${firstLine(skill)}` : ''}.`)
   }
   await deps.storage.set(setupKey(required), { at: new Date().toISOString() })
-  return { ok: true, version: required, installed }
+  return { ok: true, version: parseVersion(current.stdout)?.join('.') ?? required, installed }
 }
 
 export const isDepthReminderDismissed = async (storage) => Boolean(await storage.get(DEPTH_REMINDER_KEY))
@@ -691,36 +748,37 @@ export const dismissDepthReminder = (storage) => storage.set(DEPTH_REMINDER_KEY,
 
 // ---- panel v2: harness / model lists and goal search ----
 
-/** Installed harnesses: `orca agent installed --json` -> [{ id, name, default }]. */
+/** The only harnesses MTE Flow runs as planner or worker. */
+export const HARNESSES = ['claude', 'antigravity']
+
+/** Installed supported harnesses: `orca agent installed --json` -> [{ id, name, default }]. */
 export async function listHarnesses(deps) {
   const res = await orcaJson(deps, ['agent', 'installed'])
-  return (res.agents ?? []).map((a) => ({ id: a.id, name: a.name ?? a.id, default: Boolean(a.default) }))
+  return (res.agents ?? []).filter((a) => HARNESSES.includes(a.id)).map((a) => ({ id: a.id, name: a.name ?? a.id, default: Boolean(a.default) }))
+}
+
+/** `harness.list` response: a failed listing surfaces as `error` (the panel hints), never as a silent empty list. */
+export async function harnessList(deps) {
+  try {
+    return { harnesses: await listHarnesses(deps), error: null }
+  } catch (error) {
+    return { harnesses: [], error: String(error?.message ?? error) }
+  }
 }
 
 // No stock API lists models: seed the stable ids and always let the person type one.
 export const MODEL_SEEDS = {
-  claude: ['fable', 'opus', 'sonnet', 'haiku'],
-  codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.2-codex']
+  claude: ['fable', 'opus', 'sonnet', 'haiku']
 }
 const MODELS_TTL_MS = 10 * 60_000
-
-/** `opencode models` prints one `provider/id` per line. */
-export const parseModelLines = (stdout) =>
-  [...new Set(String(stdout ?? '').split('\n').map((l) => l.trim()).filter((l) => /^[\w.-]+\/\S+$/.test(l)))]
 
 /** `agy models` prints `<id>\t<label>` per line (after a "Fetching…" line). */
 export const parseAgyModels = (stdout) =>
   String(stdout ?? '').split('\n').map((l) => l.split('\t')).filter((c) => c.length >= 2 && /^\S+$/.test(c[0])).map(([id, label]) => ({ id, label: label.trim() }))
 
-/** `pi --list-models` prints a `provider  model  …` table under a header row; Orca takes `provider/id`. */
-export const parsePiModels = (stdout) =>
-  String(stdout ?? '').split('\n').map((l) => l.trim().split(/\s+/)).filter((c) => c.length >= 2 && c[0] !== 'provider').map((c) => ({ id: `${c[0]}/${c[1]}` }))
-
 /** Harnesses whose models are account-scoped: ask their own CLI. */
 const MODEL_PROBES = {
-  opencode: { file: 'opencode', args: ['models'], parse: (out) => parseModelLines(out).map((id) => ({ id })) },
-  antigravity: { file: 'agy', args: ['models'], parse: parseAgyModels },
-  pi: { file: 'pi', args: ['--list-models'], parse: parsePiModels }
+  antigravity: { file: 'agy', args: ['models'], parse: parseAgyModels }
 }
 
 /**
@@ -737,9 +795,10 @@ export function readExtraModels(deps, agent) {
   }
 }
 
-/** Models + effort values for one harness; probed lists are cached in plugin storage. */
+/** Models + effort values for one harness; probed lists are cached in plugin storage. A failed probe comes back as `error`, not silent emptiness. */
 export async function listModels(deps, { agent }) {
   let models = (MODEL_SEEDS[agent] ?? []).map((id) => ({ id }))
+  let error = null
   const probe = MODEL_PROBES[agent]
   if (probe) {
     const key = `models:${agent}`
@@ -748,14 +807,18 @@ export async function listModels(deps, { agent }) {
       models = cached.models
     } else {
       const res = await tryExec(deps, probe.file, probe.args, { timeoutMs: 30_000 })
-      models = res.code === 0 ? probe.parse(res.stdout) : []
+      if (res.code === 0) {
+        models = probe.parse(res.stdout)
+      } else {
+        error = res.missing ? `\`${probe.file}\` is not on PATH` : firstLine(res) || `${probe.file} ${probe.args.join(' ')} failed`
+      }
       if (models.length) {
         await deps.storage?.set(key, { at: Date.now(), models })
       }
     }
   }
   const extra = readExtraModels(deps, agent).filter((id) => !models.some((m) => m.id === id))
-  return { models: [...models, ...extra.map((id) => ({ id }))], efforts: effortsFor(agent), takesModel: takesModel(agent) }
+  return { models: [...models, ...extra.map((id) => ({ id }))], efforts: effortsFor(agent), error }
 }
 
 /** `owner/repo` of a GitHub remote url (https or ssh), else null. */

@@ -4,8 +4,10 @@ import {
   buildBootstrapPrompt,
   checkMte,
   compareVersions,
+  createPollPoster,
   dismissDepthReminder,
   ensureSetup,
+  harnessList,
   isDepthReminderDismissed,
   REQUIRED_MTE_VERSION,
   tarballUrl,
@@ -16,9 +18,10 @@ import {
   listModels,
   listOrchestration,
   listOrchestrators,
+  readClaim,
+  resolveChoices,
   setupNote,
   parseGithubRepo,
-  parseModelLines,
   resolveOrcaCli,
   searchGoal,
   startRun,
@@ -77,7 +80,7 @@ test('windows: npm .cmd shims run through a quoted cmd.exe line, .exe files dire
   // the extensionless `mte` next to mte.cmd is a shell script for Git Bash: never picked
   assert.deepEqual(plan('mte', ['--version']), { command: 'C:\\Windows\\system32\\cmd.exe', args: ['/d', '/s', '/c', '"C:\\Users\\me\\AppData\\Roaming\\npm\\mte.cmd ^^^"--version^^^""'], verbatim: true })
   assert.match(plan('npm', ['i', '-g', 'https://x/y.tgz']).args[3], /^"C:\\Program\^ Files\\nodejs\\npm\.cmd /)
-  assert.equal(plan('opencode', ['models']), null)
+  assert.equal(plan('agy', ['models']), null)
   // user text can never break out of its argument
   assert.equal(winQuote('a"b & calc.exe'), '^^^"a\\^^^"b^^^ ^^^&^^^ calc.exe^^^"')
   assert.equal(winQuote('ends with \\'), '^^^"ends^^^ with^^^ \\\\^^^"')
@@ -116,10 +119,10 @@ test('start run: planner show, install, pin set, then the orca CLI launch with /
   const seq = calls.filter((c) => c.kind === 'exec')
   assert.deepEqual(
     seq.map((c) => `${c.file} ${c.args.slice(0, 2).join(' ')}`),
-    ['mte planner show', 'mte install --agents', 'mte pin set', '/App/Resources/bin/orca agent launch']
+    ['mte planner show', 'mte install', 'mte pin set', '/App/Resources/bin/orca agent launch']
   )
   assert.deepEqual(seq[0].args, ['planner', 'show', '--json'])
-  assert.deepEqual(seq[1].args, ['install', '--agents', 'claude,opencode'])
+  assert.deepEqual(seq[1].args, ['install'])
   assert.equal(seq[1].cwd, '/repo/feat')
   assert.deepEqual(seq[2].args, ['pin', 'set', '--agent', 'claude', '--model', 'claude-sonnet-5-5', '--effort', 'high'])
   assert.equal(seq[2].cwd, '/repo/feat')
@@ -160,23 +163,11 @@ test('start run falls back to the host agent.launch only when the orca CLI is mi
   assert.ok(!failing.calls.some((c) => c.method === 'agent.launch'))
 })
 
-test('start run with an opencode worker drops effort', async () => {
-  const { deps, calls } = stubs({
-    settings: { plannerAgent: 'opencode', workerAgent: 'opencode', workerModel: 'qwen3.6-flash', workerEffort: 'high' }
-  })
-  const result = await startRun(deps, { goal: 'x' })
-  assert.equal(result.ok, true)
-  const pin = calls.find((c) => c.kind === 'exec' && c.args[0] === 'pin')
-  assert.deepEqual(pin.args, ['pin', 'set', '--agent', 'opencode', '--model', 'qwen3.6-flash'])
-  assert.ok(!pin.args.includes('--effort'))
-  assert.equal(calls.find((c) => c.args?.[0] === 'agent').args[3], 'opencode')
-})
-
 test('start run: planner overrides from the form beat the settings', async () => {
   const { deps, calls } = stubs({ settings: { plannerAgent: 'claude', workerAgent: 'claude' } })
-  await startRun(deps, { goal: 'x', plannerAgent: 'opencode' })
-  assert.equal(calls.find((c) => c.args?.[0] === 'agent').args[3], 'opencode')
-  assert.deepEqual(calls.find((c) => c.kind === 'exec' && c.args[0] === 'install').args, ['install', '--agents', 'claude,opencode'])
+  await startRun(deps, { goal: 'x', plannerAgent: 'antigravity' })
+  assert.equal(calls.find((c) => c.args?.[0] === 'agent').args[3], 'antigravity')
+  assert.deepEqual(calls.find((c) => c.kind === 'exec' && c.args[0] === 'install').args, ['install'])
 })
 
 test('start run skips the pin when no worker model is set', async () => {
@@ -205,7 +196,7 @@ test('missing mte binary yields the mte_missing error with install instructions'
   for (const result of [await startRun(deps, { goal: 'x' }), await installInWorkspace(deps)]) {
     assert.equal(result.ok, false)
     assert.equal(result.error.code, 'mte_missing')
-    assert.match(result.error.message, /npm i -g https:\/\/github\.com\/MTEKode\/mte-flow-plugin\/releases\/download\/mte-v0\.3\.0\/mtekode-mte-0\.3\.0\.tgz/)
+    assert.ok(result.error.message.includes(`npm i -g ${tarballUrl(REQUIRED_MTE_VERSION)}`), result.error.message)
     assert.doesNotMatch(result.error.message, /@mtekode\/mte/)
   }
   assert.ok(!calls.some((c) => c.args?.[0] === 'agent' || c.method === 'agent.launch'))
@@ -239,14 +230,33 @@ test('orchestration listing keeps only running workers: finished, exited and dea
   assert.equal(listing.error, null)
   assert.deepEqual(listing.workers.map((w) => [w.dispatchId, w.runId, w.state, w.workspace]), [['d1', 'run_1', 'ready', 'r::/repo/wt']])
   assert.ok(seen.find((a) => a.includes('worker-list')).join(' ').includes('--terminal-state active'))
-  assert.deepEqual(statusText(listing.workers), { n: 1, text: 'MTE 1', tone: 'accent' })
+  assert.deepEqual(statusText(listing.workers), { n: 1, text: 'MTE 1', tone: 'accent', attention: 0 })
   assert.equal(statusText([]).text, 'MTE')
+})
+
+test('AC2: active workers needing attention turn the status tone to warning', () => {
+  const w = (attention) => ({ dispatchId: 'd', taskId: 't', runId: 'r', state: 'ready', activity: 'unknown', outcome: 'in_progress', liveness: 'alive', workspace: 'r::/p', attention })
+  assert.deepEqual(statusText([w(true), w(false), w(true)]), { n: 3, text: 'MTE 3', tone: 'warning', attention: 2 })
+  assert.deepEqual(statusText([w(false)]), { n: 1, text: 'MTE 1', tone: 'accent', attention: 0 })
+  assert.deepEqual(statusText([]), { n: 0, text: 'MTE', tone: 'neutral', attention: 0 })
+})
+
+test('AC1: the poll poster posts state.changed only when the observable state changed', () => {
+  const posts = []
+  const post = createPollPoster(() => posts.push(1))
+  const state = [[{ dispatchId: 'd1' }], { status: 'idle', message: '' }, 'MTE 1', 'accent', null]
+  assert.equal(post(state), true)
+  assert.equal(post(JSON.parse(JSON.stringify(state))), false)
+  assert.equal(post(state), false)
+  assert.equal(posts.length, 1)
+  assert.equal(post([[{ dispatchId: 'd1' }, { dispatchId: 'd2' }], { status: 'idle', message: '' }, 'MTE 2', 'accent', null]), true)
+  assert.equal(posts.length, 2)
 })
 
 test('orchestrators: workers are grouped under their run and tied to the planner that started it; a planner without workers still shows; closed planners are forgotten', async () => {
   const mem = new Map([['launches', {
-    s1: { goal: 'ship it', workspacePath: '/repo', plannerAgent: 'claude', plannerModel: 'opus', workerAgent: 'opencode', workerModel: 'p/m' },
-    s2: { goal: 'second goal', workspacePath: '/other', plannerAgent: 'pi', plannerModel: '' },
+    s1: { goal: 'ship it', workspacePath: '/repo', plannerAgent: 'claude', plannerModel: 'opus', workerAgent: 'antigravity', workerModel: 'p/m' },
+    s2: { goal: 'second goal', workspacePath: '/other', plannerAgent: 'antigravity', plannerModel: '' },
     gone: { goal: 'closed', workspacePath: '/x', plannerAgent: 'claude' }
   }]])
   const { deps } = stubs({
@@ -274,19 +284,18 @@ test('orchestrators: workers are grouped under their run and tied to the planner
 
 test('start run records the launch under the planner session and tells the planner the setup in the prompt', async () => {
   const mem = new Map()
-  const { deps, calls } = stubs({ settings: { plannerAgent: 'claude', plannerModel: 'opus', plannerEffort: 'high', workerAgent: 'opencode', workerModel: 'p/m', workerEffort: 'high' } })
+  const { deps, calls } = stubs({ settings: { plannerAgent: 'claude', plannerModel: 'opus', plannerEffort: 'high', workerAgent: 'antigravity', workerModel: 'p/m', workerEffort: '' } })
   const base = deps.exec
   deps.exec = async (file, args, opts) => (args[0] === 'agent' && args[1] === 'launch' ? (calls.push({ kind: 'exec', file, args }), { code: 0, stdout: JSON.stringify({ ok: true, result: { outcome: { kind: 'structured', handle: 'structured-agent-session-abc', sessionId: 'abc' } } }), stderr: '' }) : base(file, args, opts))
   deps.storage = { get: async (k) => mem.get(k) ?? null, set: async (k, v) => void mem.set(k, v) }
   const result = await startRun(deps, { goal: 'build it' })
   assert.equal(result.ok, true)
   const launch = mem.get('launches').abc
-  assert.deepEqual([launch.goal, launch.workspacePath, launch.plannerModel, launch.workerAgent, launch.workerModel, launch.workerEffort], ['build it', '/repo/feat', 'opus', 'opencode', 'p/m', 'high'])
+  assert.deepEqual([launch.goal, launch.workspacePath, launch.plannerModel, launch.workerAgent, launch.workerModel, launch.workerEffort], ['build it', '/repo/feat', 'opus', 'antigravity', 'p/m', ''])
   const prompt = calls.find((c) => c.args?.[1] === 'launch').args.at(-2)
   assert.ok(prompt.startsWith('/mte-flow build it\n\n(Run setup'))
-  // effort is only named where it is actually sent: opencode takes none
-  assert.match(prompt, /Orchestrator: claude · opus · high\. Workers: opencode · p\/m\. State both/)
-  assert.match(setupNote({ plannerAgent: 'opencode2', plannerModel: 'x/y', workerAgent: 'claude', workerModel: '' }), /Orchestrator: opencode2 · default model\. Workers: claude · default model\./)
+  assert.match(prompt, /Orchestrator: claude · opus · high\. Workers: antigravity · p\/m\. State both/)
+  assert.match(setupNote({ plannerAgent: 'antigravity', plannerModel: '', plannerEffort: 'high', workerAgent: 'claude', workerModel: '' }), /Orchestrator: antigravity · default model\. Workers: claude · default model\./)
 })
 
 test('orchestration listing reports a missing orca CLI instead of throwing', async () => {
@@ -298,11 +307,11 @@ test('orchestration listing reports a missing orca CLI instead of throwing', asy
   assert.deepEqual(listing.workers, [])
 })
 
-test('install always wires both agents, whatever the settings say', async () => {
-  for (const settings of [{}, { plannerAgent: 'opencode', workerAgent: 'opencode' }, { plannerAgent: 'claude', workerAgent: 'claude' }]) {
+test('install wires the workspace the same way whatever the settings say', async () => {
+  for (const settings of [{}, { plannerAgent: 'antigravity', workerAgent: 'antigravity' }, { plannerAgent: 'claude', workerAgent: 'claude' }]) {
     const { deps, calls } = stubs({ settings })
     assert.equal((await installInWorkspace(deps)).ok, true)
-    assert.deepEqual(calls.find((c) => c.kind === 'exec').args, ['install', '--agents', 'claude,opencode'])
+    assert.deepEqual(calls.find((c) => c.kind === 'exec').args, ['install'])
   }
 })
 
@@ -392,7 +401,7 @@ test('a claim whose session Orca reports closed is released without asking; an o
   const closed = await run([])
   assert.equal(closed.result.ok, true)
   assert.equal(closed.result.replacedStale, true)
-  assert.deepEqual(closed.calls, ['planner show', 'agent show', 'install --agents', 'planner release', 'agent launch'])
+  assert.deepEqual(closed.calls, ['planner show', 'agent show', 'install', 'planner release', 'agent launch'])
   const open = await run([{ kind: 'chat' }])
   assert.equal(open.result.error.code, 'planner_claimed')
   assert.deepEqual(open.calls, ['planner show', 'agent show'])
@@ -404,7 +413,7 @@ test('Replace path releases the claim, then launches, in order', async () => {
   assert.equal(result.ok, true)
   assert.deepEqual(
     calls.filter((c) => c.kind === 'exec').map((c) => c.args.slice(0, 2).join(' ')),
-    ['planner show', 'install --agents', 'pin set', 'planner release', 'agent launch']
+    ['planner show', 'install', 'pin set', 'planner release', 'agent launch']
   )
 })
 
@@ -415,12 +424,67 @@ test('checkMte: a non-zero --version exit is unusable, with the stderr first lin
   assert.equal(res.unusable, true)
   assert.match(res.message, /ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING/)
   assert.doesNotMatch(res.message, /more/)
-  assert.deepEqual(await checkMte({ exec: async () => ({ code: 0, stdout: '0.3.0', stderr: '' }) }, { mteBin: 'mte' }), { missing: false })
+  assert.deepEqual(await checkMte({ exec: async () => ({ code: 0, stdout: `${REQUIRED_MTE_VERSION}\n`, stderr: '' }) }, { mteBin: 'mte' }), { missing: false, version: REQUIRED_MTE_VERSION, required: REQUIRED_MTE_VERSION, drift: false })
+})
+
+test('AC3: checkMte reports the detected version and drift below REQUIRED', async () => {
+  const newer = await checkMte({ exec: async () => ({ code: 0, stdout: '0.9.1\n', stderr: '' }) }, { mteBin: 'mte' })
+  assert.deepEqual(newer, { missing: false, version: '0.9.1', required: REQUIRED_MTE_VERSION, drift: false })
+  const older = await checkMte({ exec: async () => ({ code: 0, stdout: 'mte 0.7.0', stderr: '' }) }, { mteBin: 'mte' })
+  assert.deepEqual([older.version, older.drift], ['0.7.0', true])
+})
+
+test('AC4: a checkMte failure that is not ENOENT is reported, never silently healthy', async () => {
+  const res = await checkMte({ exec: async () => { throw new Error('spawn mte EPERM') } }, { mteBin: 'mte' })
+  assert.equal(res.missing, true)
+  assert.equal(res.unusable, true)
+  assert.match(res.message, /EPERM/)
+  assert.match(res.message, /npm i -g/)
+})
+
+test('AC3: harness.list reports a failed listing instead of swallowing it', async () => {
+  const gone = { exec: async () => { throw Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }) }, orcaCli: { bin: 'orca', env: {} } }
+  const res = await harnessList(gone)
+  assert.deepEqual(res.harnesses, [])
+  assert.match(res.error, /orca CLI/)
+  const { deps } = stubs({ exec: async () => orcaOut({ agents: [{ id: 'claude', name: 'Claude', default: true }] }) })
+  assert.deepEqual(await harnessList(deps), { harnesses: [{ id: 'claude', name: 'Claude', default: true }], error: null })
+})
+
+test('AC3: a failed models probe surfaces as error', async () => {
+  const { deps } = stubs({ exec: async () => ({ code: 1, stdout: '', stderr: 'agy: account offline\nnoise' }) })
+  const res = await listModels(deps, { agent: 'antigravity' })
+  assert.deepEqual(res.models, [])
+  assert.match(res.error, /account offline/)
+  const enoent = stubs({ exec: async () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) } })
+  assert.match((await listModels(enoent.deps, { agent: 'antigravity' })).error, /not on PATH/)
+})
+
+test('AC5: readClaim reports a corrupt claim as an actionable error (T-0004 exit)', async () => {
+  const { deps } = stubs({ exec: async () => ({ code: 1, stdout: '', stderr: 'mte: claim file .mte/planner.json is corrupt: expected \'{\'; run `mte planner release` to clear it' }) })
+  const res = await readClaim(deps, { mteBin: 'mte' }, '/repo/feat')
+  assert.equal(res.ok, false)
+  assert.equal(res.error.code, 'mte_failed')
+  assert.match(res.error.message, /corrupt/)
+})
+
+test('AC6: a settings change re-seeds the choices; unchanged settings keep stored overrides', async () => {
+  const mem = new Map()
+  const storage = { get: async (k) => mem.get(k) ?? null, set: async (k, v) => void mem.set(k, v) }
+  const s1 = { plannerAgent: 'claude', workerModel: 'sonnet' }
+  assert.deepEqual(await resolveChoices(storage, s1), {})
+  assert.deepEqual(mem.get('settingsSeed'), s1)
+  await storage.set('choices', { plannerAgent: 'antigravity' })
+  assert.deepEqual(await resolveChoices(storage, s1), { plannerAgent: 'antigravity' })
+  const s2 = { ...s1, workerModel: 'opus' }
+  assert.deepEqual(await resolveChoices(storage, s2), {})
+  assert.deepEqual(mem.get('settingsSeed'), s2)
+  assert.deepEqual(mem.get('choices'), {})
 })
 
 // ---- first-run setup ----
 
-const TARBALL = 'https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v0.3.0/mtekode-mte-0.3.0.tgz'
+const TARBALL = tarballUrl(REQUIRED_MTE_VERSION)
 
 /** In-memory plugin storage plus an exec stub driven by `env` ({ mte, node, npm, npmInstall }); records every call. */
 function setupStubs({ mte = null, node = 'v24.14.0', npm = '10.9.0', npmInstall = { code: 0 }, userInstall = { code: 0 }, storage = new Map() } = {}) {
@@ -458,30 +522,45 @@ function setupStubs({ mte = null, node = 'v24.14.0', npm = '10.9.0', npmInstall 
 }
 const npmInstalls = (calls) => calls.filter((c) => c.file === 'npm' && c.args?.[0] === 'i')
 
-test('REQUIRED_MTE_VERSION and tarball URL', () => {
-  assert.equal(REQUIRED_MTE_VERSION, '0.3.0')
-  assert.equal(tarballUrl('0.3.0'), TARBALL)
-  assert.ok(compareVersions('0.2.0', '0.3.0') < 0 && compareVersions('0.3.0', '0.3.0') === 0 && compareVersions('0.10.0', '0.3.0') > 0)
+test('version sites stay aligned: REQUIRED === CLI package.json === plugin manifest, and every install URL derives from it', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const cliPkg = JSON.parse(await readFile(new URL('../packages/mte/package.json', import.meta.url), 'utf8'))
+  const manifestText = await readFile(new URL('../orca-plugin.json', import.meta.url), 'utf8')
+  const readmeText = await readFile(new URL('../README.md', import.meta.url), 'utf8')
+  const libText = await readFile(new URL('../worker/lib.mjs', import.meta.url), 'utf8')
+  assert.equal(REQUIRED_MTE_VERSION, cliPkg.version, 'packages/mte/package.json must match REQUIRED_MTE_VERSION')
+  assert.equal(REQUIRED_MTE_VERSION, JSON.parse(manifestText).version, 'orca-plugin.json must match REQUIRED_MTE_VERSION')
+  const mteBin = JSON.parse(manifestText).contributes.settings.find((s) => s.key === 'mteBin')
+  assert.ok(mteBin.description.includes(TARBALL), 'manifest mteBin description must carry the REQUIRED tarball URL')
+  assert.ok(readmeText.includes(TARBALL), 'README install commands must carry the REQUIRED tarball URL')
+  // no stale tarball URL may survive anywhere the person reads it
+  for (const [name, text] of [['orca-plugin.json', manifestText], ['README.md', readmeText], ['worker/lib.mjs', libText]]) {
+    for (const m of text.matchAll(/releases\/download\/mte-v([\d.]+)\/mtekode-mte-([\d.]+)\.tgz/g)) {
+      assert.deepEqual([m[1], m[2]], [REQUIRED_MTE_VERSION, REQUIRED_MTE_VERSION], `${name} references tarball ${m[1]}, expected ${REQUIRED_MTE_VERSION}`)
+    }
+  }
+  assert.equal(tarballUrl('1.2.3'), 'https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v1.2.3/mtekode-mte-1.2.3.tgz')
+  assert.ok(compareVersions('0.2.0', REQUIRED_MTE_VERSION) < 0 && compareVersions(REQUIRED_MTE_VERSION, REQUIRED_MTE_VERSION) === 0 && compareVersions('0.10.0', '0.9.0') > 0)
 })
 
 test('setup: mte missing -> npm i -g <exact tarball>, then mte install --user, then remembered', async () => {
   const { deps, calls, storage } = setupStubs({ mte: null })
-  const res = await ensureSetup(deps)
-  assert.deepEqual([res.ok, res.installed], [true, true])
+  const res = await ensureSetup(deps, { force: true })
+  assert.deepEqual([res.ok, res.installed, res.version], [true, true, REQUIRED_MTE_VERSION])
   assert.deepEqual(npmInstalls(calls).map((c) => c.args), [['i', '-g', TARBALL]])
   assert.deepEqual(calls.filter((c) => c.args?.[0] === 'install').map((c) => c.args), [['install', '--user']])
-  assert.ok(storage.has('setup:0.3.0'))
+  assert.ok(storage.has(`setup:${REQUIRED_MTE_VERSION}`))
   assert.ok(calls.some((c) => c.progress))
 })
 
 test('setup: older mte -> same install; current mte -> no npm install but still installs the user skill', async () => {
   const old = setupStubs({ mte: '0.2.0' })
-  assert.equal((await ensureSetup(old.deps)).installed, true)
+  assert.equal((await ensureSetup(old.deps, { force: true })).installed, true)
   assert.deepEqual(npmInstalls(old.calls).map((c) => c.args), [['i', '-g', TARBALL]])
 
-  const current = setupStubs({ mte: '0.3.0' })
+  const current = setupStubs({ mte: REQUIRED_MTE_VERSION })
   const res = await ensureSetup(current.deps)
-  assert.deepEqual([res.ok, res.installed], [true, false])
+  assert.deepEqual([res.ok, res.installed, res.version], [true, false, REQUIRED_MTE_VERSION])
   assert.equal(npmInstalls(current.calls).length, 0)
   assert.ok(current.calls.some((c) => c.args?.join(' ') === 'install --user'))
 })
@@ -489,7 +568,7 @@ test('setup: older mte -> same install; current mte -> no npm install but still 
 test('setup: node < 24, node missing or npm missing -> error and no npm install', async () => {
   for (const [opts, code] of [[{ node: 'v22.11.0' }, 'node_old'], [{ node: null }, 'node_missing'], [{ npm: null }, 'npm_missing']]) {
     const { deps, calls, storage } = setupStubs({ mte: null, ...opts })
-    const res = await ensureSetup(deps)
+    const res = await ensureSetup(deps, { force: true })
     assert.equal(res.ok, false)
     assert.equal(res.error.code, code)
     assert.match(res.error.message, /Node|npm/)
@@ -500,7 +579,7 @@ test('setup: node < 24, node missing or npm missing -> error and no npm install'
 
 test('setup: a failing npm surfaces its error text, mentions no sudo retry and is not remembered', async () => {
   const { deps, calls, storage } = setupStubs({ mte: null, npmInstall: { code: 243, stderr: 'npm error code EACCES\nnpm error path /usr/local/lib' } })
-  const res = await ensureSetup(deps)
+  const res = await ensureSetup(deps, { force: true })
   assert.equal(res.error.code, 'npm_failed')
   assert.match(res.error.message, /EACCES/)
   assert.match(res.error.message, /never use sudo/)
@@ -511,17 +590,43 @@ test('setup: a failing npm surfaces its error text, mentions no sudo retry and i
 
 test('setup runs once per mte version; force (Repair setup) runs it again', async () => {
   const { deps, calls } = setupStubs({ mte: null })
-  assert.equal((await ensureSetup(deps)).ok, true)
+  assert.equal((await ensureSetup(deps, { force: true })).ok, true)
   const after = calls.length
   const again = await ensureSetup(deps)
-  assert.deepEqual([again.ok, again.skipped], [true, true])
-  assert.equal(calls.length, after, 'no exec on the second activation')
+  assert.deepEqual([again.ok, again.skipped, again.version], [true, true, REQUIRED_MTE_VERSION])
+  // the skipped activation only probes the CLI version: it installs nothing
+  assert.deepEqual(calls.slice(after).filter((c) => c.file === 'npm' || c.args?.[0] === 'install'), [])
+  assert.equal(calls.slice(after).length, 1, 'only the version probe runs')
   const forced = await ensureSetup(deps, { force: true })
   assert.equal(forced.skipped, undefined)
   assert.ok(calls.length > after)
   // a different stored version does not count
-  const other = setupStubs({ mte: '0.3.0', storage: new Map([['setup:0.2.0', { at: 'x' }]]) })
+  const other = setupStubs({ mte: REQUIRED_MTE_VERSION, storage: new Map([['setup:0.2.0', { at: 'x' }]]) })
   assert.equal((await ensureSetup(other.deps)).skipped, undefined)
+})
+
+test('AC3: a skipped setup reports the detected version (newer manual installs included)', async () => {
+  const { deps, calls } = setupStubs({ mte: '0.9.0', storage: new Map([[`setup:${REQUIRED_MTE_VERSION}`, { at: 'x' }]]) })
+  const res = await ensureSetup(deps)
+  assert.deepEqual([res.ok, res.skipped, res.version], [true, true, '0.9.0'])
+  assert.equal(calls.length, 1, 'read-only --version probe only')
+})
+
+test('AC7: activation never runs npm unattended: needs-consent, a dismissal stays silent, force (Run/Repair setup) installs', async () => {
+  const ask = setupStubs({ mte: null })
+  const res = await ensureSetup(ask.deps)
+  assert.deepEqual([res.ok, res.needsConsent], [true, true])
+  assert.match(res.message, /npm i -g/)
+  assert.match(res.message, /Run setup/)
+  assert.equal(npmInstalls(ask.calls).length, 0)
+  assert.equal(ask.storage.size, 0)
+  const declined = setupStubs({ mte: null, storage: new Map([['setupDeclined', { version: REQUIRED_MTE_VERSION }]]) })
+  const d = await ensureSetup(declined.deps)
+  assert.deepEqual([d.ok, d.needsConsent, d.declined], [true, undefined, true])
+  assert.equal(npmInstalls(declined.calls).length, 0)
+  const forced = setupStubs({ mte: null })
+  assert.equal((await ensureSetup(forced.deps, { force: true })).ok, true)
+  assert.equal(npmInstalls(forced.calls).length, 1)
 })
 
 test('depth reminder dismissal is stored', async () => {
@@ -538,9 +643,17 @@ test('manifest defaults: claude planner, claude worker, sonnet model, no effort;
   const defaults = Object.fromEntries(manifest.contributes.settings.map((s) => [s.key, s.default]))
   assert.deepEqual([defaults.plannerAgent, defaults.workerAgent, defaults.workerModel, defaults.workerEffort], ['claude', 'claude', 'sonnet', ''])
   assert.ok(manifest.capabilities.some((c) => c.kind === 'storage:own'))
-  assert.equal(manifest.version, '0.6.1')
   assert.equal(manifest.contributes.panels[0].ui, 'html')
   assert.equal(defaults.plannerSurface, 'chat')
+})
+
+test('AC11: mte.startRun is gone from the manifest and the worker; mte.openPanel remains', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const manifest = JSON.parse(await readFile(new URL('../orca-plugin.json', import.meta.url), 'utf8'))
+  assert.deepEqual(manifest.contributes.commands.map((c) => c.id), ['mte.install', 'mte.openPanel'])
+  const main = await readFile(new URL('../worker/main.mjs', import.meta.url), 'utf8')
+  assert.ok(!main.includes('mte.startRun'), 'worker still references mte.startRun')
+  assert.match(main, /commands\.register\('mte\.openPanel'/)
 })
 
 // ---- panel v2 ----
@@ -553,7 +666,7 @@ test('AC2: launch argv for chat/terminal, with and without model/effort; effort 
   const base = { plannerAgent: 'claude', plannerSurface: 'chat', plannerModel: '', plannerEffort: 'high' }
   assert.deepEqual(launchArgs(ws, base, 'P'), ['agent', 'launch', '--agent', 'claude', '--worktree', 'path:/w', '--surface', 'chat', '--focus', '--prompt', 'P'])
   assert.deepEqual(launchArgs(ws, { ...base, plannerSurface: 'terminal', plannerModel: 'opus' }, 'P'), ['agent', 'launch', '--agent', 'claude', '--worktree', 'path:/w', '--surface', 'terminal', '--focus', '--model', 'opus', '--effort', 'high', '--prompt', 'P'])
-  assert.ok(!launchArgs(ws, { ...base, plannerAgent: 'opencode', plannerModel: 'p/m' }, 'P').includes('--effort'))
+  assert.ok(!launchArgs(ws, { ...base, plannerAgent: 'someday', plannerModel: 'p/m' }, 'P').includes('--effort'))
 })
 
 test('AC2: start run uses the panel selection, reports a chat->terminal fallback and pins the worker selection', async () => {
@@ -565,13 +678,13 @@ test('AC2: start run uses the panel selection, reports a chat->terminal fallback
       return { code: 0, stdout: '', stderr: '' }
     }
   })
-  const res = await startRun(deps, { goal: 'x', plannerAgent: 'codex', plannerSurface: 'chat', plannerModel: 'gpt-5.5', plannerEffort: 'xhigh', workerAgent: 'pi', workerModel: 'a/b', workerEffort: 'low' })
+  const res = await startRun(deps, { goal: 'x', plannerAgent: 'claude', plannerSurface: 'chat', plannerModel: 'opus', plannerEffort: 'xhigh', workerAgent: 'antigravity', workerModel: 'a/b', workerEffort: 'low' })
   assert.equal(res.ok, true)
   assert.deepEqual([res.surface, res.fallback, res.terminalId], ['terminal', true, 'term-9'])
   const launch = calls.find((c) => c.file === ORCA)
-  assert.deepEqual(launch.args.slice(0, 8), ['agent', 'launch', '--agent', 'codex', '--worktree', 'path:/repo/feat', '--surface', 'chat'])
-  assert.ok(launch.args.join(' ').includes('--model gpt-5.5 --effort xhigh'))
-  assert.deepEqual(calls.find((c) => c.args?.[0] === 'pin').args, ['pin', 'set', '--agent', 'pi', '--model', 'a/b', '--effort', 'low'])
+  assert.deepEqual(launch.args.slice(0, 8), ['agent', 'launch', '--agent', 'claude', '--worktree', 'path:/repo/feat', '--surface', 'chat'])
+  assert.ok(launch.args.join(' ').includes('--model opus --effort xhigh'))
+  assert.deepEqual(calls.find((c) => c.args?.[0] === 'pin').args, ['pin', 'set', '--agent', 'antigravity', '--model', 'a/b', '--effort', 'low'])
 })
 
 test('AC2: a chat handle (orca_session_id) is returned as-is with no fallback', async () => {
@@ -593,60 +706,40 @@ test('AC1: real structured outcome is the chat surface with no fallback; a termi
   assert.deepEqual([fb.surface, fb.fallback], ['terminal', true])
 })
 
-test('AC2: opencode2/droid refuse --model: no --model/--effort in launch argv or pin; claude/opencode unchanged', () => {
-  const ws = { path: '/w' }
-  for (const plannerAgent of ['opencode2', 'droid']) {
-    const a = launchArgs(ws, { plannerAgent, plannerSurface: 'chat', plannerModel: 'x/y', plannerEffort: 'high' }, 'P')
-    assert.ok(!a.includes('--model') && !a.includes('--effort'))
-    assert.equal(pinArgs({ workerAgent: plannerAgent, workerModel: 'x/y', workerEffort: 'high' }), null)
-  }
-  assert.ok(launchArgs(ws, { plannerAgent: 'opencode', plannerSurface: 'chat', plannerModel: 'p/m', plannerEffort: '' }, 'P').includes('--model'))
-  assert.ok(pinArgs({ workerAgent: 'claude', workerModel: 'sonnet', workerEffort: 'low' }).includes('--effort'))
-})
-
-test('AC1: harness.list and models.list parse the real output shapes; effort hidden for opencode', async () => {
-  const agents = { agents: [{ id: 'claude', name: 'Claude', default: true }, { id: 'opencode', name: 'OpenCode', default: false }] }
-  const { deps } = stubs({
-    exec: async (file, args) => (file === ORCA ? orcaOut(agents) : { code: 0, stdout: 'bailian/qwen3.6-flash\nbailian/qwen3.7-max\nnoise line\nbailian/qwen3.6-flash\n', stderr: '' })
-  })
+test('AC1: harness.list keeps only claude and antigravity; models.list seeds claude', async () => {
+  const agents = { agents: [{ id: 'claude', name: 'Claude', default: true }, { id: 'aider', name: 'Aider', default: false }, { id: 'antigravity', name: 'Antigravity', default: false }] }
+  const { deps } = stubs({ exec: async (file) => (file === ORCA ? orcaOut(agents) : { code: 0, stdout: '', stderr: '' }) })
   deps.storage = { get: async () => null, set: async () => undefined }
-  assert.deepEqual(await listHarnesses(deps), [{ id: 'claude', name: 'Claude', default: true }, { id: 'opencode', name: 'OpenCode', default: false }])
-  const oc = await listModels(deps, { agent: 'opencode' })
-  assert.deepEqual(oc.models.map((m) => m.id), ['bailian/qwen3.6-flash', 'bailian/qwen3.7-max'])
-  assert.deepEqual(oc.efforts, [])
+  assert.deepEqual(await listHarnesses(deps), [{ id: 'claude', name: 'Claude', default: true }, { id: 'antigravity', name: 'Antigravity', default: false }])
   const cl = await listModels(deps, { agent: 'claude' })
   assert.deepEqual(cl.models.map((m) => m.id), ['fable', 'opus', 'sonnet', 'haiku'])
   assert.ok(cl.efforts.includes('max'))
-  assert.deepEqual(parseModelLines('a/b\n\n  c/d  \n'), ['a/b', 'c/d'])
 })
 
-test('antigravity and pi models come from their own CLIs; antigravity takes an effort', async () => {
-  const out = { agy: 'Fetching available models...\ngemini-4-neon-high\tGemini 4 Neon (High)\nclaude-opus-5-5-low\tClaude Opus 5.5 (Low)\n', pi: 'provider        model        context\nnvidia          meta/llama   128K\nalibaba-coding  glm-5        128K\n' }
+test('antigravity models come from its own CLI; antigravity takes an effort', async () => {
+  const out = { agy: 'Fetching available models...\ngemini-4-neon-high\tGemini 4 Neon (High)\nclaude-opus-5-5-low\tClaude Opus 5.5 (Low)\n' }
   const { deps } = stubs({ exec: async (file) => ({ code: 0, stdout: out[file] ?? '', stderr: '' }) })
   const agy = await listModels(deps, { agent: 'antigravity' })
   assert.deepEqual(agy.models, [{ id: 'gemini-4-neon-high', label: 'Gemini 4 Neon (High)' }, { id: 'claude-opus-5-5-low', label: 'Claude Opus 5.5 (Low)' }])
   assert.deepEqual(agy.efforts, ['low', 'medium', 'high'])
-  assert.deepEqual((await listModels(deps, { agent: 'pi' })).models, [{ id: 'nvidia/meta/llama' }, { id: 'alibaba-coding/glm-5' }])
-  assert.equal((await listModels(deps, { agent: 'opencode2' })).takesModel, false)
   assert.ok(launchArgs({ path: '/w' }, { plannerAgent: 'antigravity', plannerSurface: 'chat', plannerModel: 'gemini-4-neon-high', plannerEffort: 'low' }, 'P').includes('--effort'))
 })
 
 test('~/.mte/models.json adds ids to its harness only, without duplicates; a missing or broken file adds none', async () => {
   const { deps } = stubs()
-  deps.readFile = (p) => (assert.equal(p, '/home/me/.mte/models.json'), JSON.stringify({ claude: ['coder/qwen3.7-plus', 'sonnet', 'two words', 7], opencode: 'nope' }))
+  deps.readFile = (p) => (assert.equal(p, '/home/me/.mte/models.json'), JSON.stringify({ claude: ['coder/qwen3.7-plus', 'sonnet', 'two words', 7], antigravity: 'nope' }))
   assert.deepEqual((await listModels(deps, { agent: 'claude' })).models.map((m) => m.id), ['fable', 'opus', 'sonnet', 'haiku', 'coder/qwen3.7-plus'])
-  assert.equal((await listModels(deps, { agent: 'codex' })).models.length, 5)
   deps.readFile = () => { throw new Error('ENOENT') }
   assert.equal((await listModels(deps, { agent: 'claude' })).models.length, 4)
 })
 
-test('AC1: opencode models are cached in storage', async () => {
+test('AC1: antigravity models are cached in storage', async () => {
   let probes = 0
   const mem = new Map()
-  const { deps } = stubs({ exec: async () => (probes++, { code: 0, stdout: 'p/m\n', stderr: '' }) })
+  const { deps } = stubs({ exec: async () => (probes++, { code: 0, stdout: 'm\tM\n', stderr: '' }) })
   deps.storage = { get: async (k) => mem.get(k) ?? null, set: async (k, v) => void mem.set(k, v) }
-  await listModels(deps, { agent: 'opencode' })
-  await listModels(deps, { agent: 'opencode' })
+  await listModels(deps, { agent: 'antigravity' })
+  await listModels(deps, { agent: 'antigravity' })
   assert.equal(probes, 1)
 })
 

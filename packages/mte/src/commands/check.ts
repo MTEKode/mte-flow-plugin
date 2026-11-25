@@ -83,9 +83,9 @@ export function createCheckCommand(deps: CheckDeps = {}): Command {
     if (typeof only === 'string') {
       return usageError(only)
     }
-    const detect = deps.detect ?? detectChecks
+    // Detect once; runChecks consumes the same object and the JSON report reflects what actually ran.
+    const detected = (deps.detect ?? detectChecks)(root)
     if (flags.get('detect') === true) {
-      const detected = detect(root)
       console.log(`LINT=${detected.lint}\nTYPECHECK=${detected.typecheck}\nTEST=${detected.test}`)
       return 0
     }
@@ -93,16 +93,13 @@ export function createCheckCommand(deps: CheckDeps = {}): Command {
       workspaceRoot: root,
       timeoutSeconds: timeout || DEFAULT_TIMEOUT_SECONDS,
       tailLines: tail || DEFAULT_TAIL_LINES,
-      only
+      only,
+      detected
     })
     const failed = failedGroupCount(results)
     if (flags.get('json') === true) {
       console.log(
-        JSON.stringify(
-          { workspaceRoot: root, detected: detect(root), results, failedGroups: failed },
-          null,
-          2
-        )
+        JSON.stringify({ workspaceRoot: root, detected, results, failedGroups: failed }, null, 2)
       )
     } else {
       for (const result of results) {

@@ -25,22 +25,6 @@ export type QaRow = {
   timestamp: string
 }
 
-export type MemoryRole = 'orchestrator' | 'coder' | 'validator'
-export type AskRole = Exclude<MemoryRole, 'orchestrator'>
-
-export type QuestionStatus = 'pending' | 'answered'
-
-export type QuestionRow = {
-  id: number
-  step_id: string
-  topic: string
-  question: string
-  asked_by: AskRole
-  asked_at: string
-  status: QuestionStatus
-  answered_at: string | null
-}
-
 export type NoteRow = {
   id: number
   kind: string
@@ -60,9 +44,6 @@ export type MemoryStore = TaskStore & {
   supersede_decision(decision_id: number): DecisionRow
   record_qa(step_id: string, topic: string, question: string, answer: string): QaRow
   search_qa(query: string, limit?: number): QaRow[]
-  ask_question(role: AskRole, step_id: string, topic: string, question: string): QuestionRow
-  get_pending_questions(): QuestionRow[]
-  answer_question(question_id: number, answer: string): { question: QuestionRow; qa: QaRow }
   save_note(kind: string, topic: string, content: string): NoteRow
   search_notes(query: string, limit?: number): NoteRow[]
   close(): void
@@ -77,12 +58,6 @@ const SELECT_QA_BY_ID =
 const SEARCH_QA = `SELECT q.id, q.step_id, q.topic, q.question, q.answer, q.timestamp
 FROM qa_fts JOIN qa_log AS q ON q.id = qa_fts.rowid
 WHERE qa_fts MATCH ? ORDER BY qa_fts.rank LIMIT ?`
-const QUESTION_COLUMNS = 'id, step_id, topic, question, asked_by, asked_at, status, answered_at'
-const SELECT_QUESTION_BY_ID = `SELECT ${QUESTION_COLUMNS} FROM questions WHERE id = ?`
-const SELECT_PENDING_QUESTIONS = `SELECT ${QUESTION_COLUMNS} FROM questions
-WHERE status = 'pending' ORDER BY asked_at ASC, id ASC`
-const UPDATE_QUESTION_ANSWERED = `UPDATE questions SET status = 'answered',
-answered_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`
 const SELECT_NOTE_BY_ID = 'SELECT id, kind, topic, content, created_at FROM notes WHERE id = ?'
 const INSERT_DECISION =
   'INSERT INTO decisions (feature, decision, rationale, affected_files) VALUES (?, ?, ?, ?)'
@@ -105,8 +80,6 @@ function asIdColumn(value: unknown): number {
 }
 
 const DECISION_STATUSES = ['active', 'superseded'] as const
-const QUESTION_STATUSES = ['pending', 'answered'] as const
-const ASK_ROLES = ['coder', 'validator'] as const
 
 // Exhaustive member scan keeps enum columns assertion-free.
 function asEnumMember<T extends string>(value: unknown, members: readonly T[]): T {
@@ -116,10 +89,6 @@ function asEnumMember<T extends string>(value: unknown, members: readonly T[]): 
     }
   }
   throw new TypeError('memory DB enum column value is unknown')
-}
-
-function asNullableTextColumn(value: unknown): string | null {
-  return value === null ? null : asTextColumn(value)
 }
 
 function requireTextField(value: unknown, field: string): string {
@@ -172,19 +141,6 @@ function toQaRow(row: SqliteRow): QaRow {
     question: asTextColumn(row.question),
     answer: asTextColumn(row.answer),
     timestamp: asTextColumn(row.timestamp)
-  }
-}
-
-function toQuestionRow(row: SqliteRow): QuestionRow {
-  return {
-    id: asIdColumn(row.id),
-    step_id: asTextColumn(row.step_id),
-    topic: asTextColumn(row.topic),
-    question: asTextColumn(row.question),
-    asked_by: asEnumMember(row.asked_by, ASK_ROLES),
-    asked_at: asTextColumn(row.asked_at),
-    status: asEnumMember(row.status, QUESTION_STATUSES),
-    answered_at: asNullableTextColumn(row.answered_at)
   }
 }
 
@@ -257,13 +213,8 @@ export function createMemoryStore(db: SqliteConnection): MemoryStore {
       if (!Number.isInteger(decision_id) || decision_id <= 0) {
         throw new TypeError('decision_id must be a positive integer')
       }
-      const result = db
-        .prepare("UPDATE decisions SET status = 'superseded' WHERE id = ? AND status = 'active'")
-        .run(decision_id)
-      if (result.changes === 0) {
-        // Zero changes means missing or already superseded; only missing rows throw.
-        return selectById(SELECT_DECISION_BY_ID, toDecisionRow, 'decision', decision_id)
-      }
+      // Zero changes means already superseded; only a missing row throws in selectById.
+      db.prepare("UPDATE decisions SET status = 'superseded' WHERE id = ? AND status = 'active'").run(decision_id)
       return selectById(SELECT_DECISION_BY_ID, toDecisionRow, 'decision', decision_id)
     },
 
@@ -276,48 +227,6 @@ export function createMemoryStore(db: SqliteConnection): MemoryStore {
 
     search_qa(query, limit = 5) {
       return ftsSearch(SEARCH_QA, toQaRow, query, limit)
-    },
-
-    ask_question(role, step_id, topic, question) {
-      if (role !== 'coder' && role !== 'validator') {
-        throw new TypeError('role must be coder or validator')
-      }
-      const result = db
-        .prepare('INSERT INTO questions (step_id, topic, question, asked_by) VALUES (?, ?, ?, ?)')
-        .run(...requireTextFields({ step_id, topic, question }), role)
-      return selectById(SELECT_QUESTION_BY_ID, toQuestionRow, 'question', result.lastInsertRowid)
-    },
-
-    get_pending_questions() {
-      return db.prepare(SELECT_PENDING_QUESTIONS).all().map(toQuestionRow)
-    },
-
-    answer_question(question_id, answer) {
-      if (!Number.isInteger(question_id) || question_id <= 0) {
-        throw new TypeError('question_id must be a positive integer')
-      }
-      const answerText = requireTextField(answer, 'answer')
-      const existing = selectById(SELECT_QUESTION_BY_ID, toQuestionRow, 'question', question_id)
-      if (existing.status !== 'pending') {
-        throw new Error(`question already answered: ${question_id}`)
-      }
-      try {
-        db.exec('BEGIN')
-        const qaResult = db
-          .prepare('INSERT INTO qa_log (step_id, topic, question, answer) VALUES (?, ?, ?, ?)')
-          .run(existing.step_id, existing.topic, existing.question, answerText)
-        const qa = selectById(SELECT_QA_BY_ID, toQaRow, 'qa entry', qaResult.lastInsertRowid)
-        db.prepare(UPDATE_QUESTION_ANSWERED).run(question_id)
-        db.exec('COMMIT')
-        const question = selectById(SELECT_QUESTION_BY_ID, toQuestionRow, 'question', question_id)
-        return { question, qa }
-      } catch (error) {
-        // COMMIT may already have ended the transaction when a later statement fails.
-        if (db.isTransaction) {
-          db.exec('ROLLBACK')
-        }
-        throw error
-      }
     },
 
     save_note(kind, topic, content) {

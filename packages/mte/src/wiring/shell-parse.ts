@@ -3,7 +3,7 @@ export type GateKind = 'run-create' | 'worker-start'
 export type Invocation = { kind: GateKind; bin: string; args: string[] }
 
 const ORCA_BINS = new Set(['orca', 'orca-dev', 'orca-ide'])
-const WRAPPERS = new Set(['env', 'command', 'exec', 'nohup', 'time', 'builtin', '{', '!', 'if', 'then', 'do', 'else', 'elif', 'while', 'until'])
+const WRAPPERS = new Set(['env', 'command', 'exec', 'nohup', 'time', 'builtin', 'sudo', 'xargs', 'nice', '{', '!', 'if', 'then', 'do', 'else', 'elif', 'while', 'until'])
 /** `env -u NAME` / `env -C DIR` take a value. */
 const ENV_VALUE_FLAGS = new Set(['-u', '-C'])
 const CLI_VAR = /^\$\{?ORCA_CLI_COMMAND\b/
@@ -252,6 +252,10 @@ function scriptOf(words: string[]): string | null {
 /**
  * Finds `orca orchestration run-create|worker-start` calls: simple commands (also after `&&`, `|`, `$(`, backticks), real
  * `$(...)` inside double quotes, and the script of `bash -c` / `eval`. Other quoted text is data and is never re-parsed.
+ *
+ * KNOWN LIMITS (pinned by shell-parse.test.ts; this is a cooperative guardrail, not a parser): arbitrary `$VAR`
+ * command names are not expanded (only `$ORCA_CLI_COMMAND` resolves), and a substitution glued to a word
+ * (`orca$(true) orchestration ...`) hides the binary name. Both cases simply miss; nothing else bypasses the gate.
  */
 export function findInvocations(command: string, depth = 0): Invocation[] {
   const found: Invocation[] = []
