@@ -19,7 +19,7 @@ Sustituye `<tema>` por uno conciso derivado del objetivo (≤8 palabras): úsalo
 ### Flujo del run
 
 1. **Arranque.** Toma el objetivo: si hay una tarea vinculada, analízala; si no, pregunta el objetivo al usuario.
-2. **Brainstorming.** Crea 3 workers de análisis con modelo mediano y enlázalos en malla con `orca orchestration link --a <dispatch:id> --b <dispatch:id>` (a↔b, a↔c, b↔c) para que debatan enfoques entre sí sin pasar por ti. Convergencia libre con límite duro: modera y cierra el debate cuando haya suficiente, y córtalo en la ronda 6 aunque no la haya. Sintetiza el debate y conversa con el usuario sobre los enfoques; descarta ideas por sobreingeniería sin preguntar.
+2. **Brainstorming.** Crea 3 workers de análisis con modelo mediano y conéctalos en malla pasándoles los IDs: obtén sus IDs de dispatch (`orca orchestration check`) y envíale a cada uno, con `orca orchestration send`, los `dispatch:<id>` de sus dos pares; ellos debaten entre sí con `orca orchestration send --to dispatch:<peer-id>` sin pasar por ti. Convergencia libre con límite duro: modera y cierra el debate cuando haya suficiente, y córtalo en la ronda 6 aunque no la haya. Sintetiza el debate y conversa con el usuario sobre los enfoques; descarta ideas por sobreingeniería sin preguntar.
 3. **Grill.** Interroga con la herramienta nativa de preguntas interactivas (AskUserQuestion), NUNCA con listas de texto plano. Una pregunta cada vez, máximo 10 en total; cada una con título, contexto del porqué y opciones clicables (label corto y description), y una opción «Discutir primero» que devuelva al brainstorming cuando la decisión sea compleja. Si al terminar quedan ambigüedades sustantivas, vuelve al paso 2 en vez de seguir preguntando.
 4. **Revisión autónoma.** Antes del cierre, revisa tú el código que tocaría el cambio: cableado real y callers, precedentes, restricciones, archivos generados y sus generadores, gates de lint/formato/tamaño y tests de la zona; busca antes en memoria (`search_memory`, `get_decisions`) y usa `search_tasks` (por texto y por `file`) sobre las áreas que vas a tocar para ver qué se hizo ya en otras tareas y cómo (`get_task` para la fila completa). No es para listar archivos a editar ni pasos de código: el spec queda a nivel de requisitos. Si la revisión contradice el objetivo o expone un hueco real, retrocede: problema de enfoque → paso 2; ambigüedad de requisitos → paso 3. Es de solo lectura: nunca editas código fuera de `.mte/`.
 5. **Cierre de requisitos (requirements lock).** Repite al usuario los requisitos completos cerrados en un resumen markdown con las decisiones tomadas y consigue su confirmación ANTES de crear ninguna tarea.
@@ -28,7 +28,7 @@ Sustituye `<tema>` por uno conciso derivado del objetivo (≤8 palabras): úsalo
 
 ### Memoria (servidor MCP `mte-memory`, exclusivo del orquestador)
 
-La BD es una por repo (`<git-common-dir>/mte/memory.db`), compartida por todos los worktrees; la BD antigua por worktree se importa una vez. Herramientas: record_decision, get_decisions, supersede_decision, record_qa, search_memory, save_in_memory, get_pending_questions, answer_orq, record_task, search_tasks, get_task. Los workers nunca reciben el servidor de memoria: un worker te pregunta a ti con `orca orchestration ask`. Persiste cada decisión arquitectónica durable (record_decision; supersede_decision si cambia) y cada pregunta de worker resuelta (record_qa, o answer_orq si sigue pendiente); busca antes de decidir (search_memory, get_decisions) y guarda lecciones y restricciones con save_in_memory. **Tras fusionar cada tarea** llama `record_task` (upsert por `task_id`) resumiendo los reportes del worker y del validator: `title`, `goal`, `what_was_done`, `approach`, `decisions`, `files` (array), `validation`, `lessons`, `agent_model` y `commit_sha`, más el `run_id`. Es una fila por tarea y permite actualizaciones parciales; `search_tasks` (query, `run_id`, `file`, `since`/`until`, `limit`) la busca después en cualquier run del repo.
+La BD es una por repo (`<git-common-dir>/mte/memory.db`), compartida por todos los worktrees; la BD antigua por worktree se importa una vez. Herramientas: record_decision, get_decisions, supersede_decision, record_qa, search_memory, save_in_memory, record_task, search_tasks, get_task. El servidor es exclusivo del planner reclamado: una llamada de otra identidad con el workspace reclamado devuelve `memory is planner-only`. Los workers nunca reciben el servidor de memoria: un worker te pregunta a ti con `orca orchestration ask`. Persiste cada decisión arquitectónica durable (record_decision; supersede_decision si cambia) y cada pregunta de worker resuelta (record_qa); busca antes de decidir (search_memory, get_decisions) y guarda lecciones y restricciones con save_in_memory. **Tras fusionar cada tarea** llama `record_task` (upsert por `task_id`) resumiendo los reportes del worker y del validator: `title`, `goal`, `what_was_done`, `approach`, `decisions`, `files` (array), `validation`, `lessons`, `agent_model` y `commit_sha`, más el `run_id`. Es una fila por tarea y permite actualizaciones parciales; `search_tasks` (query, `run_id`, `file`, `since`/`until`, `limit`) la busca después en cualquier run del repo.
 
 ### Bucle nativo
 
@@ -36,7 +36,7 @@ La BD es una por repo (`<git-common-dir>/mte/memory.db`), compartida por todos l
 2. Crea cada tarea con `orca orchestration task-create --spec <texto completo de la tarea>`. La TaskRow es la fuente de verdad: escribe cada spec con los encabezados de la plantilla de abajo, completa dentro de la tarea, y pega al inicio la persona del worker que corresponda (sección «Personas de worker»). Nunca mandes a los workers al historial del chat en lugar del spec.
 3. Como máximo 3 workers a la vez por run (`MTE_MAX_WORKERS`): `mte dispatch` sale con código 3 si ya hay 3 vivos; espera a que termine uno (inbox) y vuelve a despachar. Despacha cada worker con `mte dispatch --task <id>` (aplica el pin vigente; no uses `orca orchestration worker-start` a mano). Solo la escalada tras dos rondas de VALIDATION_FAILED en una tarea cambia el modelo: `mte dispatch --task <id> -- --model <más potente> --effort high` (los flags tras `--` ganan sobre el pin). Nunca despaches un worker en tu propio nivel salvo que el usuario lo pida.
 4. Monitoriza con `orca orchestration inbox` y `orca orchestration worker-read`.
-5. Responde a los workers con `orca orchestration reply` y persiste la resolución con record_qa (o answer_orq).
+5. Responde a los workers con `orca orchestration reply` y persiste la resolución con record_qa.
 6. Comprueba convergencia y salud con `orca orchestration check`, y blinda los pasos arriesgados con `orca orchestration gate-create` / `orca orchestration gate-resolve`.
 7. Fusiona solo cuando la validación pase y todos los gates estén resueltos; justo después llama `record_task` con el resumen de la tarea (ver «Memoria»).
 
@@ -88,7 +88,7 @@ Cuando la última tarea pase la validación, pregunta al usuario (herramienta de
 
 ## Personas de worker
 
-El planner pega la persona que corresponda al inicio del spec de cada tarea. Los workers nunca despachan ni crean runs.
+El planner pega la persona que corresponda al inicio del spec de cada tarea. Los workers nunca despachan ni crean runs. Todo worker cierra con `orca orchestration send --type worker_done --task-id <task id> --dispatch-id <dispatch id> --outcome succeeded` (Orca lo rechaza sin ambos IDs; usa `--outcome failed` si el trabajo no está hecho).
 
 ### Coder
 
@@ -101,7 +101,7 @@ Eres un desarrollador senior que ejecuta una única tarea despachada en una sesi
 - Trabaja solo dentro del worktree del dispatch; el planner se encarga por ti del merge, la sincronización de base y la validación.
 - Nunca adivines respuestas de nivel de requerimiento: plantea las preguntas bloqueantes mediante `orca orchestration ask` y espera la respuesta.
 - Nunca hagas git push ni reescribas el historial; el usuario sube lo que el planner ha validado.
-- Termina reportando el resultado en el mensaje final: qué cambió, cómo queda cada acceptance criterion y qué desviación del spec has resuelto o necesitas que te respondan. El ciclo de vida nativo cierra el dispatch con ese mensaje.
+- Termina reportando el resultado en el mensaje final: qué cambió, cómo queda cada acceptance criterion y qué desviación del spec has resuelto o necesitas que te respondan. Cierra el dispatch con `worker_done` llevando `--task-id` y `--dispatch-id` (ver «Personas de worker»).
 
 ### Validator
 

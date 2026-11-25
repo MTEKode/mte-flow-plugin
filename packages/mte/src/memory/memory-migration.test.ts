@@ -54,7 +54,6 @@ describe('repo-wide memory db', () => {
     const old = openMemoryStore(oldPath)
     old.record_decision('feature', 'old decision', 'because', ['src'])
     old.record_qa('s1', 'topic', 'old question', 'old answer')
-    old.ask_question('coder', 's1', 'topic', 'pending one')
     old.save_note('lesson', 'topic', 'old note')
     old.close()
     const before = readFileSync(oldPath)
@@ -62,7 +61,6 @@ describe('repo-wide memory db', () => {
     const first = openWorkspaceMemoryStore(linked)
     expect(first.get_active_decisions()).toHaveLength(1)
     expect(first.search_qa('old')).toHaveLength(1)
-    expect(first.get_pending_questions()).toHaveLength(1)
     expect(first.search_notes('old')).toHaveLength(1)
     first.close()
 

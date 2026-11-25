@@ -68,8 +68,8 @@ describe('task memory', () => {
     expect(store.search_tasks({ query: 'bulk' })).toHaveLength(10)
   })
 
-  it('exposes the task tools to the orchestrator and tasks in search_memory', () => {
-    const tools = createMemoryToolHandlers(store, 'orchestrator')
+  it('exposes the task tools and tasks in search_memory', () => {
+    const tools = createMemoryToolHandlers(store)
     const recorded = tools.execute('record_task', { task_id: 'T9', title: 'Shared memory', what_was_done: 'one db per repo' })
     expect(recorded.ok).toBe(true)
     const partial = tools.execute('record_task', { task_id: 'T9', lessons: 'use git common dir' })
@@ -80,9 +80,5 @@ describe('task memory', () => {
     expect(tools.execute('get_task', { task_id: 'T9' }).ok).toBe(true)
     const memory = tools.execute('search_memory', { query: 'repo' })
     expect(memory.ok && memory.data).toMatchObject({ tasks: [{ kind: 'task', task_id: 'T9' }] })
-    for (const role of ['coder', 'validator'] as const) {
-      const scoped = createMemoryToolHandlers(store, role)
-      expect(scoped.execute('record_task', { task_id: 'x', title: 'x' }).ok).toBe(false)
-    }
   })
 })

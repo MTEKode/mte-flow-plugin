@@ -5,8 +5,9 @@ import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, it, mock } from 'node:test'
 import { expect } from '../test-support/expect.ts'
+import { writePlanner } from '../wiring/state.ts'
+import { memoryDbPath, openMemoryStore } from './memory-database.ts'
 import { runMemoryMcpServer } from './memory-mcp-server.ts'
-import type { MemoryRole } from './memory-tools.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -72,11 +73,29 @@ type Session = {
   end(): Promise<void>
 }
 
-function startSession(role: MemoryRole, workspaceRoot: string): Session {
+// This Node build has no mock.env: set the identity vars directly and restore them on exit.
+function withEnv(vars: Record<string, string>, fn: () => Promise<void>): Promise<void> {
+  const saved = new Map<string, string | undefined>()
+  for (const [name, value] of Object.entries(vars)) {
+    saved.set(name, process.env[name])
+    process.env[name] = value
+  }
+  return fn().finally(() => {
+    for (const [name, value] of saved) {
+      if (value === undefined) {
+        delete process.env[name]
+      } else {
+        process.env[name] = value
+      }
+    }
+  })
+}
+
+function startSession(workspaceRoot: string): Session {
   const input = new PassThrough()
   const output = new PassThrough()
   const replies = new ReplyReader(output)
-  const done = runMemoryMcpServer(input, output, { role, workspaceRoot })
+  const done = runMemoryMcpServer(input, output, { workspaceRoot })
   const request = (id: number, method: string, params?: unknown) => {
     const message: Record<string, unknown> = { jsonrpc: '2.0', id, method }
     if (params !== undefined) {
@@ -142,7 +161,7 @@ describe('runMemoryMcpServer', () => {
   })
 
   it('answers initialize with the tools capability, echoed protocol version and server identity', async () => {
-    const session = startSession('orchestrator', workspace)
+    const session = startSession(workspace)
     session.request(1, 'initialize', { protocolVersion: '2025-06-18' })
     const reply = await session.replies.nextReply()
     expect(reply.jsonrpc).toBe('2.0')
@@ -159,92 +178,70 @@ describe('runMemoryMcpServer', () => {
     await session.end()
   })
 
-  it('role-gates tools/list: eleven orchestrator tools, ask_orq only for coder and validator', async () => {
-    const orchestrator = startSession('orchestrator', workspace)
-    orchestrator.request(1, 'tools/list')
-    const listed = replyResult(await orchestrator.replies.nextReply())
+  it('lists the nine-tool toolkit without the retired question queue', async () => {
+    const session = startSession(workspace)
+    session.request(1, 'tools/list')
+    const listed = replyResult(await session.replies.nextReply())
     const tools = listed.tools
-    expect(Array.isArray(tools)).toBe(true)
     if (!Array.isArray(tools)) {
       throw new Error('tools must be an array')
     }
-    expect(tools).toHaveLength(11)
+    expect(tools).toHaveLength(9)
+    const names = tools.map((entry) => (isRecord(entry) ? entry.name : null))
+    for (const retired of ['ask_orq', 'answer_orq', 'get_pending_questions']) {
+      expect(names).not.toContain(retired)
+    }
     for (const entry of tools) {
       const tool = isRecord(entry) ? entry : null
       const inputSchema = tool !== null && isRecord(tool.inputSchema) ? tool.inputSchema : null
       expect(inputSchema?.type).toBe('object')
     }
-    await orchestrator.end()
-
-    for (const role of ['coder', 'validator'] as const) {
-      const scoped = startSession(role, workspace)
-      scoped.request(1, 'tools/list')
-      const scopedTools = replyResult(await scoped.replies.nextReply()).tools
-      if (!Array.isArray(scopedTools) || !isRecord(scopedTools[0])) {
-        throw new Error(`expected one tool entry for role ${role}`)
-      }
-      expect(scopedTools.map((entry) => (isRecord(entry) ? entry.name : null))).toEqual(['ask_orq'])
-      await scoped.end()
-    }
+    await session.end()
   })
 
   it('persists decisions and Q&A across server instances over the protocol', async () => {
-    const planner = startSession('orchestrator', workspace)
-    const recorded = await callTool(planner, 1, 'record_decision', {
+    const first = startSession(workspace)
+    const recorded = await callTool(first, 1, 'record_decision', {
       feature: 'mcp server',
       decision: 'hand-rolled json-rpc framing',
       rationale: 'zero new dependencies'
     })
     expect(recorded.isError).toBe(false)
     expect(isRecord(recorded.payload) && recorded.payload.ok === true).toBe(true)
-    const listed = await callTool(planner, 2, 'get_decisions', {})
-    expect(JSON.stringify(listed.payload)).toContain('hand-rolled json-rpc framing')
-    await planner.end()
-
-    const coder = startSession('coder', workspace)
-    const asked = await callTool(coder, 1, 'ask_orq', {
-      step_id: 'T-0004',
+    const qa = await callTool(first, 2, 'record_qa', {
+      step_id: 'T-0005',
       topic: 'mcp framing',
-      question: 'which protocol revision does the server speak'
-    })
-    expect(asked.isError).toBe(false)
-    const questionId =
-      isRecord(asked.payload) &&
-      isRecord(asked.payload.data) &&
-      typeof asked.payload.data.id === 'number'
-        ? asked.payload.data.id
-        : null
-    expect(questionId).not.toBeNull()
-    await coder.end()
-
-    const resolver = startSession('orchestrator', workspace)
-    const answered = await callTool(resolver, 1, 'answer_orq', {
-      question_id: questionId,
+      question: 'which protocol revision does the server speak',
       answer: 'json-rpc 2.0 over newline-delimited stdio'
     })
-    expect(answered.isError).toBe(false)
-    const found = await callTool(resolver, 2, 'search_memory', { query: 'framing' })
+    expect(qa.isError).toBe(false)
+    await first.end()
+
+    const second = startSession(workspace)
+    const listed = await callTool(second, 1, 'get_decisions', {})
+    expect(JSON.stringify(listed.payload)).toContain('hand-rolled json-rpc framing')
+    const found = await callTool(second, 2, 'search_memory', { query: 'framing' })
     expect(JSON.stringify(found.payload)).toContain('which protocol revision')
-    await resolver.end()
+    await second.end()
   })
 
-  it('reports unknown and role-forbidden tool calls as isError payloads', async () => {
-    const session = startSession('coder', workspace)
+  it('reports unknown tool calls as isError payloads', async () => {
+    const session = startSession(workspace)
     const unknown = await callTool(session, 1, 'does_not_exist')
     expect(unknown.isError).toBe(true)
     expect(JSON.stringify(unknown.payload)).toContain('unknown tool')
-    const forbidden = await callTool(session, 2, 'record_decision', {
-      feature: 'x',
-      decision: 'y',
-      rationale: 'z'
+    const retired = await callTool(session, 2, 'ask_orq', {
+      step_id: 's',
+      topic: 't',
+      question: 'q'
     })
-    expect(forbidden.isError).toBe(true)
-    expect(JSON.stringify(forbidden.payload)).toContain('not allowed for role')
+    expect(retired.isError).toBe(true)
+    expect(JSON.stringify(retired.payload)).toContain('unknown tool: ask_orq')
     await session.end()
   })
 
   it('answers ping, survives malformed lines, refuses batches and stays silent on notifications', async () => {
-    const session = startSession('orchestrator', workspace)
+    const session = startSession(workspace)
     session.request(1, 'ping')
     expect(replyResult(await session.replies.nextReply())).toEqual({})
 
@@ -281,7 +278,7 @@ describe('runMemoryMcpServer', () => {
     const input = new PassThrough()
     const output = new PassThrough()
     const consoleError = mock.method(console, 'error', () => {})
-    const done = runMemoryMcpServer(input, output, { role: 'coder', workspaceRoot: workspace })
+    const done = runMemoryMcpServer(input, output, { workspaceRoot: workspace })
     input.write(
       `${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } })}\n`
     )
@@ -317,7 +314,6 @@ describe('runMemoryMcpServer', () => {
     const consoleError = mock.method(console, 'error', () => {})
     await expect(
       runMemoryMcpServer(input, output, {
-        role: 'orchestrator',
         workspaceRoot: join(blocker, 'nested')
       })
     ).rejects.toThrow()
@@ -325,5 +321,77 @@ describe('runMemoryMcpServer', () => {
     // Diagnostics went to stderr, never to the protocol stream.
     expect(consoleError).toHaveBeenCalledTimes(1)
     consoleError.mock.restore()
+  })
+
+  // The gate reads the claim and the env at call time: the planner's MCP starts before `mte planner claim`.
+  describe('planner identity gate (tools/call only)', () => {
+    it('refuses a tools/call from a foreign identity in a claimed workspace, with no db write', async () => {
+      await withEnv({ ORCA_TERMINAL_HANDLE: '', ORCA_AGENT_SESSION_ID: 'worker-9' }, async () => {
+        writePlanner(workspace, { sessionId: 'planner-1' })
+        const session = startSession(workspace)
+        const denied = await callTool(session, 1, 'record_decision', {
+          feature: 'f',
+          decision: 'leaked?',
+          rationale: 'r'
+        })
+        expect(denied.isError).toBe(true)
+        expect(denied.payload).toEqual({
+          ok: false,
+          error: 'memory is planner-only; workers use orca orchestration ask'
+        })
+        await session.end()
+      })
+      const store = openMemoryStore(memoryDbPath(workspace))
+      expect(store.get_active_decisions()).toEqual([])
+      expect(store.search_qa('leaked')).toEqual([])
+      store.close()
+    })
+
+    it('keeps tools/list ungated: a foreign identity still sees the full nine-tool list', async () => {
+      await withEnv({ ORCA_TERMINAL_HANDLE: '', ORCA_AGENT_SESSION_ID: 'worker-9' }, async () => {
+        writePlanner(workspace, { sessionId: 'planner-1' })
+        const session = startSession(workspace)
+        session.request(1, 'tools/list')
+        const tools = replyResult(await session.replies.nextReply()).tools
+        expect(Array.isArray(tools)).toBe(true)
+        expect(tools).toHaveLength(9)
+        await session.end()
+      })
+    })
+
+    it('allows the claiming identity', async () => {
+      await withEnv({ ORCA_TERMINAL_HANDLE: '', ORCA_AGENT_SESSION_ID: 'planner-1' }, async () => {
+        writePlanner(workspace, { sessionId: 'planner-1' })
+        const session = startSession(workspace)
+        const recorded = await callTool(session, 1, 'record_decision', {
+          feature: 'f',
+          decision: 'd',
+          rationale: 'r'
+        })
+        expect(recorded.isError).toBe(false)
+        expect(recorded.payload).toEqual({
+          ok: true,
+          data: expect.objectContaining({ decision: 'd', status: 'active' })
+        })
+        await session.end()
+      })
+    })
+
+    it('allows any identity while the workspace is unclaimed, and a claim after startup keeps the same caller working', async () => {
+      await withEnv({ ORCA_TERMINAL_HANDLE: '', ORCA_AGENT_SESSION_ID: 'whoever' }, async () => {
+        const session = startSession(workspace)
+        const first = await callTool(session, 1, 'record_qa', {
+          step_id: 's1',
+          topic: 'bootstrap',
+          question: 'can I write before the claim?',
+          answer: 'yes, fail open'
+        })
+        expect(first.isError).toBe(false)
+        writePlanner(workspace, { sessionId: 'whoever' })
+        const after = await callTool(session, 2, 'get_decisions', {})
+        expect(after.isError).toBe(false)
+        await session.end()
+      })
+    })
   })
 })
