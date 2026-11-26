@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { gatePlanner, pinFlags } from '../wiring/guard-logic.ts'
 import { getFlag, hasFlag } from '../wiring/shell-parse.ts'
 import { identityFromEnv, logGuard, readPin } from '../wiring/state.ts'
+import type { WorkerPin } from '../wiring/state.ts'
 import { pinRole } from './pin.ts'
 import { resolveWorkspaceRoot, usageError } from './flags.ts'
 import type { Command } from './flags.ts'
@@ -32,6 +33,8 @@ function activeWorkers(orca: string, cwd: string, ws: string): number | null {
  * the role's pin flags (`qa` falls back to the coder pin when no qa pin is set). Explicit extra flags win over the pin (escalation). Refuses (exit 3) while
  * MTE_MAX_WORKERS (default 3) workers are already running in the Run. Exit code = orca's.
  */
+const sameModel = (a: WorkerPin, b: WorkerPin | null): boolean => b !== null && a.agent === b.agent && a.model === b.model
+
 export const dispatchCommand: Command = ({ flags, cwd, rest = [] }) => {
   const task = flags.get('task')
   if (typeof task !== 'string' || task === '') {
@@ -72,7 +75,14 @@ export const dispatchCommand: Command = ({ flags, cwd, rest = [] }) => {
     )
     return 3
   }
-  const pin = readPin(root, role) ?? readPin(root)
+  const own = readPin(root, role)
+  const pin = own ?? readPin(root)
+  if (role === 'qa' && pin !== null && (own === null || sameModel(own, readPin(root)))) {
+    // warning only: the reviewer should not be the model that wrote the code
+    process.stderr.write(
+      `mte dispatch: warning: the QA worker runs on the coder's model (${pin.agent}/${pin.model}); set a different one with: mte pin set --role qa --agent <a> --model <m>\n`
+    )
+  }
   const effectiveAgent = getFlag(rest, 'agent') ?? pin?.agent
   let pinned: string[] = []
   if (pin !== null && effectiveAgent === pin.agent) {
@@ -82,7 +92,9 @@ export const dispatchCommand: Command = ({ flags, cwd, rest = [] }) => {
       pinned = hasFlag(rest, name) ? pinned : [...pinned, ...all.slice(i, i + 2)]
     }
   }
-  const args = ['orchestration', 'worker-start', '--task', task, ...pinned, ...rest]
+  // a coder gets its own child worktree unless told otherwise, so its branch is reviewed and merged, never committed on the planner's
+  const worktree = role === 'coder' && !hasFlag(rest, 'worktree') ? ['--worktree', 'new-child'] : []
+  const args = ['orchestration', 'worker-start', '--task', task, ...worktree, ...pinned, ...rest]
   const res = spawnSync(orca, args, { stdio: 'inherit', cwd })
   if (res.error) {
     return usageError(`mte dispatch: cannot run orca: ${res.error.message}`)

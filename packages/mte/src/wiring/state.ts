@@ -83,6 +83,10 @@ function plannerPath(ws: string): string {
   return dir === '' ? legacyPlannerPath(ws) : join(dir, 'mte', 'planner.json')
 }
 
+/** The run's current phase, as the planner last announced it (`## Fase N — name`); lives beside the planner claim. */
+export type RunPhase = { phase: number; name: string; at: string }
+const phasePath = (ws: string): string => join(plannerPath(ws), '..', 'phase.json')
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -160,6 +164,7 @@ export function readPlanner(ws: string): PlannerClaim | null {
 export function writePlanner(ws: string, identity: Identity): PlannerClaim {
   const claim = { ...identity, claimedAt: new Date().toISOString() }
   writeJsonFile(plannerPath(ws), claim)
+  rmSync(phasePath(ws), { force: true }) // a new claim starts a new run: the old phase no longer applies
   return claim
 }
 
@@ -169,7 +174,20 @@ export function removePlanner(ws: string): boolean {
   migrateLegacyPlanner(ws, path)
   const had = existsSync(path)
   rmSync(path, { force: true })
+  rmSync(phasePath(ws), { force: true })
   return had
+}
+
+export function readPhase(ws: string): RunPhase | null {
+  const raw = readJsonFile(phasePath(ws))
+  const phase = raw?.phase
+  return typeof phase === 'number' && Number.isInteger(phase) ? { phase, name: optString(raw?.name) ?? '', at: optString(raw?.at) ?? '' } : null
+}
+
+export function writePhase(ws: string, phase: number, name: string): RunPhase {
+  const row = { phase, name, at: new Date().toISOString() }
+  writeJsonFile(phasePath(ws), row)
+  return row
 }
 
 /** Best-effort diagnostics; the guard must never fail because logging failed. */

@@ -18,6 +18,9 @@ import {
   listModels,
   listOrchestration,
   listOrchestrators,
+  listAttention,
+  plannerHome,
+  releaseWorker,
   readClaim,
   resolveChoices,
   setupNote,
@@ -962,4 +965,52 @@ test('AC4: an unreadable focused workspace fails the create step, not silently',
   assert.equal(result.error.code, 'worktree_read_failed')
   assert.match(result.error.message, /show refused/)
   assert.equal(calls.filter((c) => c.kind === 'exec').length, 1)
+})
+
+test('a coder in a child worktree is tied to its planner through the parent worktree: claim and phase come from there', async () => {
+  const ok = (result) => ({ code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: '' })
+  const seen = []
+  const { deps } = stubs({
+    exec: async (file, args, opts) => {
+      seen.push({ args, cwd: opts?.cwd })
+      if (args[0] === 'worktree') return ok({ worktrees: [{ id: 'r::/repo', path: '/repo', parentWorktreeId: null }, { id: 'r::/wt/coder', path: '/wt/coder', parentWorktreeId: 'r::/repo' }] })
+      if (args.includes('worker-list') && args.includes('active')) return ok({ workers: [fullWorker('d1', 'run_1', 'in_progress', 'alive', 'r::/wt/coder')] })
+      if (args.includes('worker-list')) return ok({ workers: [] })
+      if (args.includes('run-list')) return ok({ runs: [{ id: 'run_1', objective: 'Ship' }] })
+      if (args.includes('inbox')) return ok({ messages: [{ id: 'm1', type: 'ask', to: 'run:run_1', handled: false, subject: 'Which table?' }, { id: 'm2', type: 'ask', to: 'run:run_1', handled: true, subject: 'old' }, { id: 'm3', type: 'worker_done', to: 'run:run_1', handled: false, subject: 'done' }] })
+      if (args.includes('gate-list')) return ok({ gates: [{ id: 'g1', question: 'Deploy now?' }] })
+      if (args[0] === 'phase') return { code: 0, stdout: JSON.stringify(opts?.cwd === '/repo' ? { phase: 5, name: 'Coder', at: 'x' } : { phase: null }), stderr: '' }
+      if (args[0] === 'planner') return { code: 0, stdout: JSON.stringify({ claimed: false }), stderr: '' }
+      return { code: 0, stdout: '', stderr: '' }
+    }
+  })
+  deps.storage = { get: async () => null, set: async () => undefined }
+  const { orchestrators, attention } = await listOrchestrators(deps)
+  assert.deepEqual(orchestrators.map((o) => [o.id, o.phase, o.home]), [['run_1', { phase: 5, name: 'Coder' }, 'r::/repo']])
+  assert.ok(seen.some((c) => c.args[0] === 'planner' && c.cwd === '/repo'))
+  assert.deepEqual(attention.map((a) => [a.kind, a.text, a.run, a.workspace]), [['ask', 'Which table?', 'Ship', 'r::/repo'], ['gate', 'Deploy now?', 'Ship', 'r::/repo']])
+  assert.deepEqual(plannerHome(new Map(), 'r::/solo'), { id: 'r::/solo', path: '/solo' })
+})
+
+test('attention lists settled workers whose terminal is still kept; every source fails soft', async () => {
+  const ok = (result) => ({ code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: '' })
+  const deps = {
+    orcaCli: { bin: 'orca', env: {} },
+    exec: async (file, args) => {
+      if (args.includes('retained')) return ok({ workers: [{ dispatchId: 'ctx_a1', taskId: 'task_1', runId: 'run_1', workerState: 'succeeded' }, { dispatchId: 'ctx_a2', runId: 'run_1', workerState: 'running' }] })
+      if (args.includes('reclaimable')) return { code: 1, stdout: '', stderr: 'boom' }
+      return { code: 1, stdout: '', stderr: 'no' }
+    }
+  }
+  const items = await listAttention(deps, ['run_1'], [{ id: 'run_1', objective: 'Ship' }], [])
+  assert.deepEqual(items.map((i) => [i.kind, i.dispatchId, i.run]), [['release', 'ctx_a1', 'Ship']])
+})
+
+test('release re-checks the dispatch id before calling orca', async () => {
+  const calls = []
+  const deps = { orcaCli: { bin: 'orca', env: {} }, exec: async (file, args) => (calls.push(args), { code: 0, stdout: JSON.stringify({ ok: true, result: {} }), stderr: '' }) }
+  assert.equal((await releaseWorker(deps, 'ctx_; rm -rf /')).error.code, 'bad_dispatch')
+  assert.equal(calls.length, 0)
+  assert.equal((await releaseWorker(deps, 'ctx_abc123')).ok, true)
+  assert.deepEqual(calls[0], ['orchestration', 'worker-release', '--dispatch', 'ctx_abc123', '--json'])
 })

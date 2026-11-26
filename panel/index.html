@@ -69,6 +69,8 @@
   .who .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .worker { border-top: 1px solid var(--orca-border); }
   .empty { border: 1px solid var(--orca-border); border-radius: var(--r); padding: 7px 10px; }
+  .attn { border: 1px solid var(--orca-border); border-radius: var(--r); padding: 6px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .attn .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .worker { padding: 6px 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .badge { font-size: 11px; border-radius: 999px; background: var(--orca-primary); color: var(--orca-primary-foreground); padding: 1px 8px; }
   .chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; border: 1px solid var(--orca-border); border-radius: 999px; padding: 2px 4px 2px 8px; font-size: 12px; }
@@ -123,6 +125,11 @@
     <input id="ws-base" value="origin/main" placeholder="Base branch" aria-label="Base branch">
   </div>
   <div class="muted" id="ws"></div>
+
+  <div class="stack section" id="attention-box" style="gap:6px" hidden>
+    <span class="label">Needs you</span>
+    <div class="stack" id="attention" style="gap:6px"></div>
+  </div>
 
   <div class="stack section" style="gap:6px">
     <span class="label">Orchestrators</span>

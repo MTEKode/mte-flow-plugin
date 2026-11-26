@@ -12,10 +12,10 @@ MTE es un flujo de tres roles coordinado con `orca orchestration`: un **planner*
 
 1. Instala MTE en el repo actual: `mte install` (idempotente: hook de Claude, `.mcp.json` y copia de este skill; si el repo ya está configurado no cambia nada). Si `mte` no existe, díselo al usuario: el plugin MTE Flow de Orca lo instala (botón «Repair setup»).
 2. Reclama el workspace: `mte planner claim`. Solo el planner reclamado puede ejecutar `orca orchestration run-create` y `worker-start`; el resto (también quien no presenta identidad) recibe un deny del guard. Si responde «planner already claimed», di al usuario quién lo tiene (`mte planner show --json`) y pregunta antes de ejecutar `mte planner claim --force`; nunca continúes sin claim en silencio.
-3. Lee `playbook.md` (sección «Planner») y sigue sus 8 fases: exploración (3 Exploradores independientes) → brainstorming → grill me → write spec → coder (1-2) → QA (2) → resumen con nota visual → PR en draft.
+3. Lee `playbook.md` (sección «Planner») y sigue sus 8 fases. Cada una se abre con su cabecera exacta, todas obligatorias: `## Fase 1 — Exploración`, `## Fase 2 — Brainstorming`, `## Fase 3 — Grill me`, `## Fase 4 — Write spec`, `## Fase 5 — Coder`, `## Fase 6 — QA`, `## Fase 7 — Resumen`, `## Fase 8 — PR en draft`. Solo la fase 3 usa preguntas interactivas; el resto, incluido el requirements lock de la fase 4, es conversación en texto.
 4. Despacha SIEMPRE con `mte dispatch --task <id>`: aplica el pin de worker de `.mte/worker-pin.json`. Validators y QA: `mte dispatch --task <id> --role qa` (pin de `.mte/worker-pin-qa.json`). Un `worker-start` directo sin `--agent/--model` del pin se deniega con el comando corregido.
 5. Memoria: servidor MCP `mte-memory` (record_decision, get_decisions, search_memory, record_qa, save_in_memory, ...). Búscala antes de decidir. Es una BD por repo (compartida entre worktrees): tras fusionar cada tarea llama `record_task` y, en la revisión autónoma, `search_tasks` sobre las áreas que vas a tocar.
-6. Si no hay objetivo, pregúntalo al usuario (herramienta de preguntas interactivas).
+6. Si no hay objetivo, pregúntalo al usuario en texto.
 
 ## Si eres un worker (explorador, coder, validator, QA, poller)
 

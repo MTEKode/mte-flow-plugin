@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
-import { claimCallout, createSearcher, createWorkspaceArgs, filterRows, fitSelection, goalSlug, groupRows, iconFor, addLink, listHints, listKey, modelRows, moveIndex, mteDriftHint, mteRow, originIcon, parseRef, startNote } from '../panel/logic.mjs'
+import { claimCallout, createSearcher, createWorkspaceArgs, filterRows, fitSelection, goalSlug, groupRows, iconFor, addLink, listHints, listKey, modelRows, moveIndex, mteDriftHint, mteRow, originIcon, parseRef, startNote, phaseText, attentionRow } from '../panel/logic.mjs'
 
 test('model rows: default first, labels when the CLI gives them, an unlisted current model stays', () => {
   const info = { models: [{ id: 'gemini-x-high', label: 'Gemini X (High)' }, { id: 'p/m' }] }
@@ -258,4 +258,14 @@ test('AC5: the new-workspace inputs exist hidden; the panel reveals them only wh
   const js = await readFile(new URL('../panel/panel.js', import.meta.url), 'utf8')
   assert.match(js, /\$\('new-ws'\)\.onchange[^\n]*\n[^\n]*ws-fields'\)\.hidden = !/)
   assert.match(js, /newWorkspace: \$\('new-ws'\)\.checked/)
+})
+
+test('phase tag and attention rows', () => {
+  assert.equal(phaseText({ phase: 5, name: 'Coder' }), 'Fase 5/8 · Coder')
+  assert.equal(phaseText({ phase: 2, name: '' }), 'Fase 2/8')
+  assert.equal(phaseText(null), null)
+  assert.equal(phaseText({ phase: null }), null)
+  assert.deepEqual(attentionRow({ kind: 'release', text: 't1 finished', run: 'Goal', dispatchId: 'ctx_1' }), { label: 'Idle terminal', text: 't1 finished', run: 'Goal', action: 'release' })
+  assert.equal(attentionRow({ kind: 'ask', text: 'q', run: 'G', workspace: 'r::/p' }).action, 'focus')
+  assert.equal(attentionRow({ kind: 'gate', text: 'q', run: 'G', workspace: null }).action, null)
 })

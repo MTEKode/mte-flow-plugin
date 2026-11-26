@@ -148,6 +148,14 @@ function installClaude(ws: string): void {
       list.push(hook)
     }
     hooks.PreToolUse = list
+    const stop = hooks.Stop ?? []
+    if (!Array.isArray(stop)) {
+      throw new Error(`${settingsPath}: hooks.Stop must be an array`)
+    }
+    if (!JSON.stringify(stop).includes('mte phase --claude-hook')) {
+      stop.push(JSON.parse(asset('adapters/claude-stop-hook.json')))
+    }
+    hooks.Stop = stop
   })
   mergeJson(join(ws, '.mcp.json'), (doc) => {
     child(doc, 'mcpServers', '.mcp.json')['mte-memory'] = memoryMcpEntry()

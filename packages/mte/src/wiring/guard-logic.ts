@@ -3,6 +3,10 @@ import type { GateKind, Invocation } from './shell-parse.ts'
 import { hasIdentity, readPin, readPlanner, sameCaller, writePlanner } from './state.ts'
 import type { Identity, WorkerPin } from './state.ts'
 
+/** Deny reason for git calls that skip hooks; applies to every caller, planner included. */
+export const GIT_HOOK_BYPASS =
+  'git hooks must not be skipped (--no-verify, commit -n, core.hooksPath): fix what the hook reports instead, or ask the user to run it themselves'
+
 export type Verdict = { allow: true } | { allow: false; reason: string }
 
 const ALLOW: Verdict = { allow: true }

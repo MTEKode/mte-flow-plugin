@@ -254,3 +254,23 @@ export function createSearcher({ request, onResult, delay = 300, minLength = 2, 
     }
   }
 }
+
+/** Run phase tag: `Fase 5/8 · Coder`; null when the planner has not announced a phase yet. */
+export function phaseText(phase) {
+  if (!Number.isInteger(phase?.phase)) {
+    return null
+  }
+  return `Fase ${phase.phase}/8${phase.name ? ` · ${phase.name}` : ''}`
+}
+
+const ATTENTION_LABEL = { ask: 'Worker question', escalation: 'Escalation', gate: 'Decision gate', release: 'Idle terminal' }
+
+/** What an attention row says and which action it offers: release a kept terminal, or focus the planner. */
+export function attentionRow(item) {
+  return {
+    label: ATTENTION_LABEL[item.kind] ?? 'Attention',
+    text: item.text,
+    run: item.run,
+    action: item.kind === 'release' ? 'release' : item.workspace ? 'focus' : null
+  }
+}
