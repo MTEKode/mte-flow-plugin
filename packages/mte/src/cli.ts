@@ -7,6 +7,7 @@ import type { Command, Flags } from './commands/flags.ts'
 import { guardCommand } from './commands/guard.ts'
 import { installCommand } from './commands/install.ts'
 import { memoryCommand } from './commands/memory.ts'
+import { phaseCommand, phaseShowCommand } from './commands/phase.ts'
 import { pinGetCommand, pinSetCommand } from './commands/pin.ts'
 import { plannerClaimCommand, plannerReleaseCommand, plannerShowCommand } from './commands/planner.ts'
 import { readPackageVersion } from './version.ts'
@@ -27,6 +28,8 @@ export const COMMANDS: Record<string, Command> = {
   'planner claim': plannerClaimCommand,
   'planner show': plannerShowCommand,
   'planner release': plannerReleaseCommand,
+  phase: phaseCommand,
+  'phase show': phaseShowCommand,
   install: installCommand
 }
 
@@ -45,6 +48,7 @@ Usage:
   mte pin set --agent <a> --model <m> [--effort <e>] [--role coder|qa] | mte pin get --json [--role qa]
   mte planner claim [--force] [--session-id <id>] [--terminal-handle <h>] | mte planner show --json
   mte planner release [--workspace <path>]                                drop the planner claim (next claim needs no --force)
+  mte phase show [--json] [--workspace <path>] | mte phase --claude-hook   the run's current phase (recorded by the Claude Stop hook)
   mte install [--workspace <path>]                                        wire skill, Claude hook and memory MCP
   mte install --user                                                      install the mte-flow skill in ~/.claude/skills
   mte --version | mte help

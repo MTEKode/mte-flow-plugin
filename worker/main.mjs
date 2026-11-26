@@ -15,6 +15,7 @@ import {
   listModels,
   listOrchestration,
   listOrchestrators,
+  releaseWorker,
   openPanel,
   readClaim,
   readSettings,
@@ -170,6 +171,7 @@ export default async function activate(orca) {
     return { ok: true }
   })
   orca.panels.handle('workspace.focus', async ({ workspace }) => focusWorkspace(host, workspace))
+  orca.panels.handle('worker.release', async ({ dispatchId }) => afterMutation(await releaseWorker(deps, dispatchId)))
 
   orca.commands.register('mte.openPanel', () => openPanel(deps))
   orca.commands.register('mte.install', async () => {

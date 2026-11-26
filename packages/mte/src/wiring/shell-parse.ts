@@ -226,7 +226,9 @@ function matchSegment(words: string[]): Invocation | null {
   if (words[i] !== 'orchestration' || (sub !== 'run-create' && sub !== 'worker-start')) {
     return null
   }
-  return { kind: sub, bin, args: words.slice(i + 2) }
+  const args = words.slice(i + 2)
+  // `--help` only prints usage: never gate it
+  return args.includes('--help') || args.includes('-h') ? null : { kind: sub, bin, args }
 }
 
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash'])
@@ -249,6 +251,25 @@ function scriptOf(words: string[]): string | null {
   return null
 }
 
+/** Words of every simple command in `command`: also after `&&`, `|`, `$(`, backticks, real `$(...)` inside double quotes, and the script of `bash -c` / `eval` (3 levels deep). */
+function simpleCommands(command: string, depth = 0): string[][] {
+  const out: string[][] = []
+  const subs: string[] = []
+  for (const words of segments(tokenize(command, subs))) {
+    out.push(words)
+    const script = scriptOf(words)
+    if (script !== null && depth < 3) {
+      out.push(...simpleCommands(script, depth + 1))
+    }
+  }
+  if (depth < 3) {
+    for (const sub of subs) {
+      out.push(...simpleCommands(sub, depth + 1))
+    }
+  }
+  return out
+}
+
 /**
  * Finds `orca orchestration run-create|worker-start` calls: simple commands (also after `&&`, `|`, `$(`, backticks), real
  * `$(...)` inside double quotes, and the script of `bash -c` / `eval`. Other quoted text is data and is never re-parsed.
@@ -257,24 +278,52 @@ function scriptOf(words: string[]): string | null {
  * command names are not expanded (only `$ORCA_CLI_COMMAND` resolves), and a substitution glued to a word
  * (`orca$(true) orchestration ...`) hides the binary name. Both cases simply miss; nothing else bypasses the gate.
  */
-export function findInvocations(command: string, depth = 0): Invocation[] {
-  const found: Invocation[] = []
-  const subs: string[] = []
-  for (const words of segments(tokenize(command, subs))) {
-    const hit = matchSegment(words)
-    const script = hit ? null : scriptOf(words)
-    if (hit) {
-      found.push(hit)
-    } else if (script !== null && depth < 3) {
-      found.push(...findInvocations(script, depth + 1))
+export function findInvocations(command: string): Invocation[] {
+  return simpleCommands(command)
+    .map(matchSegment)
+    .filter((hit): hit is Invocation => hit !== null)
+}
+
+/** git global options that take the next word as their value. */
+const GIT_VALUE_OPTS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env'])
+const HOOKS_PATH = /core\.hookspath/i
+/** Subcommands whose `--no-verify` skips a hook. */
+const VERIFYING = new Set(['commit', 'push', 'merge', 'rebase', 'cherry-pick', 'am', 'revert', 'pull'])
+
+function skipsHooks(words: string[]): boolean {
+  let i = commandIndex(words)
+  if (baseName(words[i] ?? '') !== 'git') {
+    return false
+  }
+  for (i++; (words[i] ?? '').startsWith('-'); i++) {
+    const opt = words[i] ?? ''
+    if (HOOKS_PATH.test(opt)) {
+      return true // -c=..., --config-env=core.hooksPath=VAR
+    }
+    if (GIT_VALUE_OPTS.has(opt)) {
+      if ((opt === '-c' || opt === '--config-env') && HOOKS_PATH.test(words[i + 1] ?? '')) {
+        return true
+      }
+      i++
     }
   }
-  if (depth < 3) {
-    for (const sub of subs) {
-      found.push(...findInvocations(sub, depth + 1))
-    }
+  const sub = words[i] ?? ''
+  const args = words.slice(i + 1)
+  if (sub === 'config') {
+    // reading the key is fine; setting, adding or unsetting it is not
+    const key = args.findIndex((arg) => HOOKS_PATH.test(arg))
+    return key !== -1 && (args.length > key + 1 || args.some((arg) => /^--(unset|add|replace-all)/.test(arg)))
   }
-  return found
+  if (VERIFYING.has(sub) && args.includes('--no-verify')) {
+    return true
+  }
+  // commit -n is --no-verify (also bundled: -nm, -an)
+  return sub === 'commit' && args.some((arg) => /^-[A-Za-z]*n[A-Za-z]*$/.test(arg))
+}
+
+/** True when `command` runs git skipping its hooks: `--no-verify`, `commit -n`, or setting `core.hooksPath` (`-c`, `git config`). Same reach and limits as findInvocations. */
+export function findGitHookBypass(command: string): boolean {
+  return simpleCommands(command).some(skipsHooks)
 }
 
 export function getFlag(args: readonly string[], name: string): string | undefined {

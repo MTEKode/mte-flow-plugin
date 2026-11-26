@@ -4,3 +4,4 @@ dist/
 .orca/
 .mte/planner.json
 .mte/guard.log
+e2e/out/

@@ -1,5 +1,5 @@
 // MTE Flow panel (html, isolated frame): all data comes from the worker through orca.plugin.request.
-import { addLink, claimCallout, createSearcher, filterRows, fitSelection, groupRows, iconFor, KIND_LABEL, listHints, listKey, modelRows, mteDriftHint, mteRow, originIcon, originOf, parseRef, startNote } from './logic.mjs'
+import { addLink, attentionRow, claimCallout, createSearcher, filterRows, fitSelection, groupRows, iconFor, KIND_LABEL, listHints, listKey, modelRows, mteDriftHint, mteRow, originIcon, originOf, parseRef, phaseText, startNote } from './logic.mjs'
 
 const $ = (id) => document.getElementById(id)
 const req = (name, params = {}) => orca.plugin.request(name, params, { timeoutMs: 120000 })
@@ -274,13 +274,29 @@ function render() {
         el('button', { type: 'button', textContent: '×', ariaLabel: `Remove ${l.label}`, onclick: () => unlink(l) }))
     )
   )
+  const attention = s?.attention ?? []
+  $('attention-box').hidden = attention.length === 0
+  $('attention').replaceChildren(
+    ...attention.map((item) => {
+      const row = attentionRow(item)
+      const button =
+        row.action === 'release'
+          ? [btn('Release', () => act('release', () => req('worker.release', { dispatchId: item.dispatchId }), () => 'Worker terminal released.'))]
+          : row.action === 'focus'
+            ? [btn('Focus', () => act('focus', () => req('workspace.focus', { workspace: item.workspace }), () => 'Planner workspace focused.'))]
+            : []
+      return el('div', { className: 'attn' },
+        el('div', { className: 't' }, el('div', {}, el('span', { className: 'tag', textContent: row.label }), ' ', el('span', { textContent: row.text, title: row.text })), el('div', { className: 'muted', textContent: row.run })),
+        ...button)
+    })
+  )
   const runs = s?.orchestrators ?? []
   $('runs').replaceChildren(
     ...(runs.length
       ? runs.map((r) => {
           const l = r.launch
           const box = el('details', { className: 'run', open: !closedRuns.has(r.id) },
-            el('summary', {}, ...(l ? [agentBadge(l.plannerAgent)] : []), el('span', { className: 't', textContent: r.title, title: r.title }), ...(l ? [el('span', { className: 'tag', textContent: choiceText(l.plannerModel, l.plannerEffort) })] : []), el('span', { className: 'muted', textContent: `${r.workers.length} worker${r.workers.length === 1 ? '' : 's'}` })),
+            el('summary', {}, ...(l ? [agentBadge(l.plannerAgent)] : []), el('span', { className: 't', textContent: r.title, title: r.title }), ...(phaseText(r.phase) ? [el('span', { className: 'tag', textContent: phaseText(r.phase) })] : []), ...(l ? [el('span', { className: 'tag', textContent: choiceText(l.plannerModel, l.plannerEffort) })] : []), el('span', { className: 'muted', textContent: `${r.workers.length} worker${r.workers.length === 1 ? '' : 's'}` })),
             ...(r.workers.length
               ? r.workers.map((w) => el('div', { className: 'worker' },
                   // Orca does not say which pin (coder or qa) a worker runs, so no model here

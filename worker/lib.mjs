@@ -11,7 +11,7 @@ import { createWorkspaceArgs, goalSlug, parseRef } from '../panel/logic.mjs'
 export const PROMPT_MAX = 4000
 export const TRUNCATION_MARKER = '\n[goal truncated]'
 /** The mte CLI version this plugin release is built for; the setup installs it when `mte` is missing or older. */
-export const REQUIRED_MTE_VERSION = '0.8.3'
+export const REQUIRED_MTE_VERSION = '0.8.4'
 export const MIN_NODE_MAJOR = 24
 export const tarballUrl = (version) =>
   `https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v${version}/mtekode-mte-${version}.tgz`
@@ -675,8 +675,11 @@ async function liveLaunches(deps) {
  */
 export async function listOrchestrators(deps) {
   const settings = await readSettings(deps.host)
-  const { workers, runs, error } = await listOrchestration(deps)
-  const launches = await liveLaunches(deps).catch(() => ({}))
+  const [{ workers, runs, error }, launches, worktrees] = await Promise.all([
+    listOrchestration(deps),
+    liveLaunches(deps).catch(() => ({})),
+    worktreeIndex(deps)
+  ])
   const byRun = new Map()
   for (const w of workers) {
     byRun.set(w.runId, [...(byRun.get(w.runId) ?? []), w])
@@ -684,20 +687,100 @@ export async function listOrchestrators(deps) {
   const used = new Set()
   const orchestrators = await Promise.all(
     [...byRun].map(async ([runId, list]) => {
-      const claim = await readClaim(deps, settings, workspacePath(list[0].workspace)).catch(() => null)
+      const home = plannerHome(worktrees, list[0].workspace)
+      const [claim, phase] = await Promise.all([readClaim(deps, settings, home.path).catch(() => null), readPhase(deps, settings, home.path)])
       const key = [claim?.claim?.sessionId, claim?.claim?.terminalHandle].find((k) => k && launches[k])
       if (key) {
         used.add(key)
       }
-      return { id: runId, title: runs.find((r) => r.id === runId)?.objective || runId, launch: key ? launches[key] : null, workers: list }
+      return { id: runId, title: runs.find((r) => r.id === runId)?.objective || runId, launch: key ? launches[key] : null, workers: list, phase, home: home.id }
     })
   )
   for (const [key, launch] of Object.entries(launches)) {
     if (!used.has(key)) {
-      orchestrators.push({ id: key, title: launch.goal, launch, workers: [] })
+      orchestrators.push({ id: key, title: launch.goal, launch, workers: [], phase: await readPhase(deps, settings, launch.workspacePath), home: null })
     }
   }
-  return { orchestrators, activeWorkers: workers.length, error }
+  const attention = await listAttention(deps, [...byRun.keys()], runs, orchestrators)
+  return { orchestrators, attention, activeWorkers: workers.length, error }
+}
+
+/** Orca worktrees by id (`<repo>::<path>`) with their parent; empty when Orca cannot list them. */
+async function worktreeIndex(deps) {
+  try {
+    const { worktrees = [] } = await orcaJson(deps, ['worktree', 'list'])
+    return new Map(worktrees.map((w) => [w.id, { path: w.path, parent: w.parentWorktreeId ?? null }]))
+  } catch {
+    return new Map()
+  }
+}
+
+/** The planner's worktree for a worker workspace: its parent when the coder runs in a child worktree, else itself. */
+export function plannerHome(index, workspaceId) {
+  const parent = index.get(workspaceId)?.parent
+  const id = parent && index.has(parent) ? parent : workspaceId
+  return { id, path: index.get(id)?.path ?? workspacePath(id) }
+}
+
+/** `mte phase show` in the planner's worktree: `{ phase, name }`, or null (no phase yet, older mte, any failure). */
+async function readPhase(deps, settings, cwd) {
+  if (!cwd) {
+    return null
+  }
+  try {
+    const res = await deps.exec(settings.mteBin, ['phase', 'show', '--json'], { cwd })
+    const row = res.code === 0 ? JSON.parse(res.stdout) : null
+    return Number.isInteger(row?.phase) ? { phase: row.phase, name: String(row.name ?? '') } : null
+  } catch {
+    return null
+  }
+}
+
+const ASKING = new Set(['ask', 'escalation'])
+
+/**
+ * What needs a person, across runs: worker questions and escalations the planner has not handled, pending decision
+ * gates, and settled workers whose terminal Orca still keeps (released with one click). Each source fails soft.
+ */
+export async function listAttention(deps, runIds, runs, orchestrators) {
+  const title = (runId) => runs.find((r) => r.id === runId)?.objective || runId
+  const home = (runId) => orchestrators.find((o) => o.id === runId)?.home ?? null
+  const soft = (p) => p.catch(() => null)
+  const perRun = await Promise.all(
+    runIds.map(async (runId) => {
+      const [inbox, gates] = await Promise.all([
+        soft(orcaJson(deps, ['orchestration', 'inbox', '--run', runId])),
+        soft(orcaJson(deps, ['orchestration', 'gate-list', '--run', runId, '--status', 'pending']))
+      ])
+      const asks = (inbox?.messages ?? [])
+        .filter((m) => ASKING.has(m.type) && m.handled === false && String(m.to ?? '').startsWith('run:'))
+        .map((m) => ({ kind: m.type, runId, run: title(runId), text: m.subject || m.body || m.id, workspace: home(runId) }))
+      const pending = (gates?.gates ?? []).map((g) => ({ kind: 'gate', runId, run: title(runId), text: g.question || g.title || g.prompt || g.id, workspace: home(runId) }))
+      return [...asks, ...pending]
+    })
+  )
+  const kept = await Promise.all(['retained', 'reclaimable'].map((state) => soft(orcaJson(deps, ['orchestration', 'worker-list', '--terminal-state', state, '--limit', '100']))))
+  const release = kept
+    .flatMap((r) => r?.workers ?? [])
+    .filter((w) => SETTLED_STATES.has(w.workerState))
+    .map((w) => ({ kind: 'release', runId: w.runId ?? '', run: title(w.runId), text: `${w.taskId || w.dispatchId} finished (${w.workerState}); its terminal is still open`, dispatchId: w.dispatchId }))
+  return [...perRun.flat(), ...release]
+}
+
+const SETTLED_STATES = new Set(['succeeded', 'failed', 'stopped', 'cancelled', 'abandoned'])
+const DISPATCH_ID = /^ctx_[A-Za-z0-9]+$/
+
+/** Releases a settled worker's terminal (`orca orchestration worker-release`); the id is re-checked here (trust boundary). */
+export async function releaseWorker(deps, dispatchId) {
+  if (!DISPATCH_ID.test(String(dispatchId ?? ''))) {
+    return { ok: false, error: { code: 'bad_dispatch', message: `Not a dispatch id: ${String(dispatchId).slice(0, 40)}` } }
+  }
+  try {
+    await orcaJson(deps, ['orchestration', 'worker-release', '--dispatch', dispatchId])
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: { code: error?.code ?? 'orca_failed', message: String(error?.message ?? error) } }
+  }
 }
 
 /** Focus a worker's workspace: its id is `<repo>::<path>`; resolve it against workspace.list. */

@@ -319,6 +319,19 @@ describe('mte guard cli', () => {
     assert.equal(mte(ws, ['guard', '--command', 'ls']).status, 0)
   })
 
+  it('denies git hook bypasses for every caller, planner included, in probe and hook mode', () => {
+    const ws = repo()
+    writePlanner(ws, { sessionId: 'p' })
+    const probe = mte(ws, ['guard', '--command', 'git commit --no-verify -m x'], { ORCA_AGENT_SESSION_ID: 'p' })
+    assert.equal(probe.status, 2)
+    assert.match(probe.stderr, /git hooks must not be skipped/)
+    const payload = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git -c core.hooksPath=/dev/null commit -m x' }, cwd: ws })
+    const hook = mte(ws, ['guard', '--claude-hook'], {}, payload)
+    assert.equal(hook.status, 0)
+    assert.match(hook.stdout, /"permissionDecision":"deny"/)
+    assert.equal(mte(ws, ['guard', '--command', 'git commit -m x']).status, 0)
+  })
+
   it('hook mode auto-claims the first identified run-create caller (AC2)', () => {
     const ws = repo()
     const payload = JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'orca orchestration run-create --objective x' }, cwd: ws })
@@ -403,10 +416,11 @@ describe('pin, planner and dispatch cli', () => {
     mte(ws, ['pin', 'set', '--agent', 'claude', '--model', 'sonnet', '--effort', 'high'])
     mte(ws, ['planner', 'claim', '--session-id', 'p'])
     const plain = mte(ws, ['dispatch', '--task', 'T-1'], orca)
-    assert.equal(plain.stdout.trim(), 'ORCA orchestration worker-start --task T-1 --agent claude --model sonnet --effort high')
+    assert.equal(plain.stdout.trim(), 'ORCA orchestration worker-start --task T-1 --worktree new-child --agent claude --model sonnet --effort high')
     const esc = mte(ws, ['dispatch', '--task', 'T-1', '--', '--model', 'opus'], orca)
-    assert.equal(esc.stdout.trim(), 'ORCA orchestration worker-start --task T-1 --agent claude --effort high --model opus')
+    assert.equal(esc.stdout.trim(), 'ORCA orchestration worker-start --task T-1 --worktree new-child --agent claude --effort high --model opus')
     assert.equal(mte(ws, ['dispatch', '--task', 'T-1'], { ...orca, ORCA_AGENT_SESSION_ID: 'w' }).status, 2)
+    assert.equal(mte(ws, ['dispatch', '--task', 'T-1', '--', '--worktree', 'current'], orca).stdout.trim(), 'ORCA orchestration worker-start --task T-1 --agent claude --model sonnet --effort high --worktree current')
     assert.equal(mte(ws, ['dispatch', '--task', 'T-1'], { ...orca, FAKE_ORCA_EXIT: '7' }).status, 7)
   })
 
@@ -416,11 +430,13 @@ describe('pin, planner and dispatch cli', () => {
     mte(ws, ['pin', 'set', '--agent', 'claude', '--model', 'sonnet'])
     mte(ws, ['planner', 'claim', '--session-id', 'p'])
     assert.equal(mte(ws, ['dispatch', '--task', 'T-1', '--role', 'qa'], orca).stdout.trim(), 'ORCA orchestration worker-start --task T-1 --agent claude --model sonnet')
+    assert.match(mte(ws, ['dispatch', '--task', 'T-1', '--role', 'qa'], orca).stderr, /QA worker runs on the coder's model/)
     mte(ws, ['pin', 'set', '--role', 'qa', '--agent', 'claude', '--model', 'haiku', '--effort', 'low'])
     assert.deepEqual(JSON.parse(mte(ws, ['pin', 'get', '--json', '--role', 'qa']).stdout), { agent: 'claude', model: 'haiku', effort: 'low' })
     assert.deepEqual(JSON.parse(mte(ws, ['pin', 'get', '--json']).stdout), { agent: 'claude', model: 'sonnet' })
     assert.equal(mte(ws, ['dispatch', '--task', 'T-1', '--role', 'qa'], orca).stdout.trim(), 'ORCA orchestration worker-start --task T-1 --agent claude --model haiku --effort low')
-    assert.equal(mte(ws, ['dispatch', '--task', 'T-1'], orca).stdout.trim(), 'ORCA orchestration worker-start --task T-1 --agent claude --model sonnet')
+    assert.doesNotMatch(mte(ws, ['dispatch', '--task', 'T-1', '--role', 'qa'], orca).stderr, /coder's model/)
+    assert.equal(mte(ws, ['dispatch', '--task', 'T-1'], orca).stdout.trim(), 'ORCA orchestration worker-start --task T-1 --worktree new-child --agent claude --model sonnet')
     assert.equal(mte(ws, ['dispatch', '--task', 'T-1', '--role', 'boss'], orca).status, 1)
     const guard = (cmd) => mte(ws, ['guard', '--command', cmd, '--session-id', 'p']).status
     assert.equal(guard('orca orchestration worker-start --task T-1 --agent claude --model haiku --effort low'), 0)
@@ -443,7 +459,7 @@ describe('dispatch concurrency limit', () => {
     assert.match(full.stderr, /3 workers already running \(limit 3\)/)
     assert.doesNotMatch(full.stdout, /worker-start/)
     const raised = mte(ws, ['dispatch', '--task', 'T-1'], { ...orca, MTE_MAX_WORKERS: '4' })
-    assert.equal(raised.stdout.trim(), 'ORCA orchestration worker-start --task T-1')
+    assert.equal(raised.stdout.trim(), 'ORCA orchestration worker-start --task T-1 --worktree new-child')
     const lowered = mte(ws, ['dispatch', '--task', 'T-1'], { ...orca, MTE_MAX_WORKERS: '2' })
     assert.equal(lowered.status, 3) // AC6: a valid MTE_MAX_WORKERS=2 is honored
     assert.equal(mte(ws, ['dispatch', '--task', 'T-1'], { ...orca, MTE_MAX_WORKERS: '' }).status, 3) // empty falls back to the default 3
@@ -500,12 +516,12 @@ describe('dispatch executable', () => {
     const ws = repo()
     mte(ws, ['planner', 'claim', '--session-id', 'p'])
     const viaVar = mte(ws, ['dispatch', '--task', 'T-9'], { ORCA_CLI_COMMAND: join(bin, 'fake-orca'), ORCA_AGENT_SESSION_ID: 'p' })
-    assert.equal(viaVar.stdout.trim(), 'ORCA orchestration worker-start --task T-9')
+    assert.equal(viaVar.stdout.trim(), 'ORCA orchestration worker-start --task T-9 --worktree new-child')
     const dir = mkdtempSync(join(root, 'path-'))
     writeFileSync(join(dir, 'orca'), '#!/bin/sh\necho "PATHORCA $@"\n')
     chmodSync(join(dir, 'orca'), 0o755)
     const viaPath = mte(ws, ['dispatch', '--task', 'T-9'], { PATH: `${dir}:${process.env.PATH}`, ORCA_CLI_COMMAND: '', ORCA_AGENT_SESSION_ID: 'p' })
-    assert.equal(viaPath.stdout.trim(), 'PATHORCA orchestration worker-start --task T-9')
+    assert.equal(viaPath.stdout.trim(), 'PATHORCA orchestration worker-start --task T-9 --worktree new-child')
   })
 })
 
@@ -539,7 +555,7 @@ describe('mte install', () => {
 
     const settings = JSON.parse(readFileSync(join(ws, '.claude/settings.json'), 'utf8'))
     assert.deepEqual(settings.permissions, { allow: ['Bash(ls)'] })
-    assert.deepEqual(settings.hooks.Stop, [])
+    assert.deepEqual(settings.hooks.Stop, [{ hooks: [{ type: 'command', command: 'mte phase --claude-hook' }] }])
     assert.equal(settings.hooks.PreToolUse.length, 2)
     const mcp = JSON.parse(readFileSync(join(ws, '.mcp.json'), 'utf8'))
     assert.deepEqual(Object.keys(mcp.mcpServers), ['other', 'mte-memory'])
@@ -662,5 +678,51 @@ describe('skill assets', () => {
       assert.match(text, /planner already claimed/)
       assert.match(text, /--force/)
     }
+  })
+})
+
+describe('mte phase', () => {
+  const transcript = (ws: string, ...texts: string[]): string => {
+    const path = join(ws, 'transcript.jsonl')
+    const rows = texts.map((text) => JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } }))
+    writeFileSync(path, ['{"cut line', JSON.stringify({ type: 'user', message: { content: '## Fase 8 — not the planner' } }), ...rows].join('\n'))
+    return path
+  }
+  const hook = (ws: string, path: string, session: string) =>
+    mte(ws, ['phase', '--claude-hook'], { ORCA_AGENT_SESSION_ID: session }, JSON.stringify({ transcript_path: path, cwd: ws }))
+  const show = (ws: string) => JSON.parse(mte(ws, ['phase', 'show', '--json']).stdout)
+
+  it('records the claimed planner\'s latest phase header; ignores other callers; a new claim clears it', () => {
+    const ws = repo()
+    assert.deepEqual(show(ws), { phase: null })
+    mte(ws, ['planner', 'claim', '--session-id', 'p'])
+    const path = transcript(ws, '## Fase 2 — Brainstorming\nIdeas', 'texto\n\n## Fase 3 — Grill me (cierre)\nmás')
+    const res = hook(ws, path, 'w')
+    assert.equal(res.status, 0)
+    assert.equal(res.stdout, '') // a Stop hook that prints nothing never blocks the stop
+    assert.deepEqual(show(ws), { phase: null }) // a worker's transcript never moves the run
+    assert.equal(hook(ws, path, 'p').status, 0)
+    assert.deepEqual({ ...show(ws), at: '' }, { phase: 3, name: 'Grill me', at: '' })
+    mte(ws, ['planner', 'claim', '--session-id', 'p2', '--force'])
+    assert.deepEqual(show(ws), { phase: null })
+  })
+
+  it('prefers the payload\'s last assistant message: the transcript can lag behind the Stop hook', () => {
+    const ws = repo()
+    mte(ws, ['planner', 'claim', '--session-id', 'p'])
+    const path = transcript(ws, '## Fase 6 — QA')
+    const payload = JSON.stringify({ transcript_path: path, cwd: ws, last_assistant_message: '## Fase 7 — Resumen\nhecho\n\n## Fase 8 — PR en draft\nurl' })
+    assert.equal(mte(ws, ['phase', '--claude-hook'], { ORCA_AGENT_SESSION_ID: 'p' }, payload).status, 0)
+    assert.equal(show(ws).phase, 8)
+    const plain = JSON.stringify({ transcript_path: path, cwd: ws, last_assistant_message: 'sin cabecera' })
+    mte(ws, ['phase', '--claude-hook'], { ORCA_AGENT_SESSION_ID: 'p' }, plain)
+    assert.equal(show(ws).phase, 6) // no header in the last message: the transcript decides
+  })
+
+  it('fails open on a missing transcript and refuses to run without --claude-hook', () => {
+    const ws = repo()
+    mte(ws, ['planner', 'claim', '--session-id', 'p'])
+    assert.equal(hook(ws, join(ws, 'nope.jsonl'), 'p').status, 0)
+    assert.equal(mte(ws, ['phase']).status, 1)
   })
 })

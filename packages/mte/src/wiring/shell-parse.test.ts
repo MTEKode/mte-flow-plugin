@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { after, before, describe, it } from 'node:test'
-import { findInvocations } from './shell-parse.ts'
+import { findGitHookBypass, findInvocations } from './shell-parse.ts'
 
 type Case = { cmd: string; want: ('run-create' | 'worker-start')[]; args?: string[]; note?: string }
 
@@ -13,6 +13,8 @@ const CASES: Case[] = [
   { cmd: RUN, want: ['run-create'] },
   { cmd: START, want: ['worker-start'] },
   { cmd: 'orca orchestration inbox', want: [] },
+  { cmd: 'orca orchestration run-create --help', want: [], note: 'usage probe' },
+  { cmd: 'orca orchestration worker-start -h', want: [], note: 'usage probe' },
   { cmd: 'notorca orchestration worker-start --task x', want: [] },
   { cmd: '/Applications/Orca.app/Contents/Resources/bin/orca orchestration worker-start --task x', want: ['worker-start'] },
   // wrappers
@@ -73,4 +75,38 @@ describe('findInvocations', () => {
   it('matches the literal value of ORCA_CLI_COMMAND', () => {
     assert.deepEqual(findInvocations('/opt/orca-cli orchestration worker-start --task x').map((i) => i.kind), ['worker-start'])
   })
+})
+
+describe('findGitHookBypass', () => {
+  const blocked = [
+    'git commit --no-verify -m x',
+    'git commit -n -m x',
+    'git commit -anm x',
+    'git push --no-verify origin HEAD',
+    'git -c core.hooksPath=/dev/null commit -m x',
+    'git -C repo -c core.hooksPath=x commit -m y',
+    'git config core.hooksPath /tmp/none',
+    'git config --local core.hooksPath .nohooks',
+    'git config --unset core.hooksPath',
+    'cd repo && git commit --no-verify -m x',
+    'bash -c "git commit --no-verify -m x"',
+    'echo $(git merge --no-verify main)'
+  ]
+  const allowed = [
+    'git commit -m "skip --no-verify talk"',
+    'git commit -m x',
+    'git push origin HEAD',
+    'git push -n origin HEAD',
+    'git config core.hooksPath',
+    'git config --get core.hooksPath',
+    'git log --oneline',
+    "echo 'git commit --no-verify'",
+    'gitleaks detect --no-verify'
+  ]
+  for (const cmd of blocked) {
+    it(`blocks: ${cmd}`, () => assert.equal(findGitHookBypass(cmd), true))
+  }
+  for (const cmd of allowed) {
+    it(`allows: ${cmd}`, () => assert.equal(findGitHookBypass(cmd), false))
+  }
 })
