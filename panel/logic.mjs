@@ -294,3 +294,27 @@ export function attentionRow(item) {
     action: item.kind === 'release' ? 'release' : item.workspace ? 'focus' : null
   }
 }
+
+/** Repo picker rows matching every word of `q` in name, host or path. */
+export function filterRepos(repos, q) {
+  const words = String(q ?? '').toLowerCase().split(/\s+/).filter(Boolean)
+  return words.length ? repos.filter((r) => words.every((w) => `${r.name} ${r.host} ${r.path}`.toLowerCase().includes(w))) : repos
+}
+
+/** Repos grouped by host, in first-seen order (this machine first, as the worker lists it). */
+export function groupRepos(repos) {
+  const groups = []
+  for (const r of repos) {
+    let g = groups.find((x) => x.host === r.host)
+    if (!g) {
+      groups.push((g = { host: r.host, platform: r.platform ?? null, server: Boolean(r.server), repos: [] }))
+    }
+    g.repos.push(r)
+  }
+  return groups
+}
+
+/** `darwin` → mac, `win32` → windows, `linux` → linux; anything else → null (no OS icon). */
+export function osOf(platform) {
+  return { darwin: 'mac', win32: 'windows', linux: 'linux' }[platform] ?? null
+}

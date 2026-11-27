@@ -11,7 +11,7 @@ import { createWorkspaceArgs, goalSlug, parseRef } from '../panel/logic.mjs'
 export const PROMPT_MAX = 4000
 export const TRUNCATION_MARKER = '\n[goal truncated]'
 /** The mte CLI version this plugin release is built for; the setup installs it when `mte` is missing or older. */
-export const REQUIRED_MTE_VERSION = '0.8.10'
+export const REQUIRED_MTE_VERSION = '0.8.11'
 export const MIN_NODE_MAJOR = 24
 export const tarballUrl = (version) =>
   `https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v${version}/mtekode-mte-${version}.tgz`
@@ -457,42 +457,92 @@ function launchRecord(goal, ws, settings) {
 
 const envArgs = (env) => (env ? ['--environment', env] : [])
 
+const iconCache = new Map()
+
+/**
+ * A project icon as a data: URL (the panel frame cannot be trusted to load remote images), fetched once per src.
+ * null on any failure, too-large image or non-image answer: the panel then draws the letter badge.
+ */
+async function iconData(deps, src) {
+  if (!/^https:\/\//.test(String(src ?? ''))) {
+    return null
+  }
+  if (!iconCache.has(src)) {
+    iconCache.set(
+      src,
+      (async () => {
+        try {
+          const res = await (deps.fetch ?? globalThis.fetch)(src, { signal: AbortSignal.timeout(5_000) })
+          const type = res.headers.get('content-type') ?? ''
+          const buf = Buffer.from(await res.arrayBuffer())
+          return res.ok && type.startsWith('image/') && buf.length <= 256 * 1024 ? `data:${type.split(';')[0]};base64,${buf.toString('base64')}` : null
+        } catch {
+          return null
+        }
+      })()
+    )
+  }
+  return iconCache.get(src)
+}
+
 /**
  * Git repos the new-workspace picker offers, on every host Orca reaches: this machine and its SSH targets (`project
- * setups`), plus each paired Orca server (`project setups --environment <id>`). `key` (`<env|local>|<setup id>`) is
- * what the panel sends back; a server that does not answer is skipped. Older Orca without project setups: `repo list`.
+ * setups`), plus each paired Orca server (`project setups --environment <id>`). Each row carries what the picker
+ * draws like Orca does: the project icon (or its badge color), the host's platform and whether it is a server. `key`
+ * (`<env|local>|<setup id>`) is what the panel sends back; a server that does not answer is skipped. Older Orca
+ * without project setups: `repo list`.
  */
 export async function listRepos(deps) {
   const soft = (p) => p.catch(() => null)
-  const [setups, environments, hosts] = await Promise.all([
+  const [setups, environments, hosts, projects] = await Promise.all([
     soft(orcaJson(deps, ['project', 'setups'])),
     soft(orcaJson(deps, ['environment', 'list'])),
-    soft(orcaJson(deps, ['host', 'list']))
+    soft(orcaJson(deps, ['host', 'list'])),
+    soft(orcaJson(deps, ['project', 'list']))
   ])
-  const hostName = (id) => (id === 'local' ? 'this machine' : (hosts?.hosts ?? []).find((h) => h.id === id)?.name ?? id)
-  const rows = (list, env, envName) =>
-    (list ?? [])
-      .filter((r) => (r.kind ?? 'git') === 'git' && (r.setupState ?? 'ready') === 'ready')
-      .map((r) => ({
-        key: `${env ?? 'local'}|${r.id}`,
-        env: env ?? null,
-        setupId: r.id,
-        repoId: r.repoId ?? null,
-        hostId: r.hostId ?? 'local',
-        name: r.displayName || String(r.path ?? '').split(/[\\/]/).pop(),
-        host: env ? (r.hostId && r.hostId !== 'local' ? `${envName} › ${r.hostId}` : envName) : hostName(r.hostId ?? 'local'),
-        path: r.path ?? ''
-      }))
+  const hostRow = (id) => (hosts?.hosts ?? []).find((h) => h.id === id)
+  const rows = async (list, projectList, { env = null, envName = '', envPlatform = null } = {}) =>
+    Promise.all(
+      (list ?? [])
+        .filter((r) => (r.kind ?? 'git') === 'git' && (r.setupState ?? 'ready') === 'ready')
+        .map(async (r) => {
+          const hostId = r.hostId ?? 'local'
+          const project = (projectList ?? []).find((p) => p.id === r.projectId)
+          const icon = project?.repoIcon?.type === 'image' ? await iconData(deps, project.repoIcon.src) : null
+          const sshName = hostId === 'local' ? null : hostRow(hostId)?.name ?? hostId.replace(/^ssh:/, '')
+          return {
+            key: `${env ?? 'local'}|${r.id}`,
+            env,
+            setupId: r.id,
+            repoId: r.repoId ?? null,
+            hostId,
+            name: r.displayName || project?.displayName || String(r.path ?? '').split(/[\\/]/).pop(),
+            host: env ? (sshName ? `${envName} › ${sshName}` : envName) : sshName ?? 'this machine',
+            platform: (env ? (sshName ? null : envPlatform) : (hostRow(hostId)?.platform ?? (hostId === 'local' ? process.platform : null))) || null,
+            server: Boolean(env) || hostId !== 'local',
+            icon,
+            color: project?.badgeColor ?? null,
+            path: r.path ?? ''
+          }
+        })
+    )
   if (!setups) {
     const legacy = await soft(orcaJson(deps, ['repo', 'list']))
     return (legacy?.repos ?? [])
       .filter((r) => (r.kind ?? 'git') === 'git')
-      .map((r) => ({ key: `local|${r.id}`, env: null, setupId: null, repoId: r.id, hostId: 'local', name: r.displayName || r.path.split(/[\\/]/).pop(), host: 'this machine', path: r.path }))
+      .map((r) => ({ key: `local|${r.id}`, env: null, setupId: null, repoId: r.id, hostId: 'local', name: r.displayName || r.path.split(/[\\/]/).pop(), host: 'this machine', platform: process.platform, server: false, icon: null, color: r.badgeColor ?? null, path: r.path }))
   }
   const remote = await Promise.all(
-    (environments?.environments ?? []).map(async (e) => rows((await soft(orcaJson(deps, ['project', 'setups', '--environment', e.id])))?.setups, e.id, e.name || e.id))
+    (environments?.environments ?? []).map(async (e) => {
+      const [envSetups, envProjects, envHost] = await Promise.all([
+        soft(orcaJson(deps, ['project', 'setups', '--environment', e.id])),
+        soft(orcaJson(deps, ['project', 'list', '--environment', e.id])),
+        soft(orcaJson(deps, ['host', 'name', '--environment', e.id]))
+      ])
+      return rows(envSetups?.setups, envProjects?.projects, { env: e.id, envName: e.name || envHost?.machineName || e.id, envPlatform: envHost?.platform ?? null })
+    })
   )
-  return [...rows(setups.setups, null), ...remote.flat()]
+  return [...(await rows(setups.setups, projects?.projects)), ...remote.flat()]
 }
 
 /** True when work for this picker entry runs on this machine (so `mte` can be run here directly). */

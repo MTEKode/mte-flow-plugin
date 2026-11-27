@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
-import { claimCallout, createSearcher, createWorkspaceArgs, filterRows, fitSelection, goalSlug, groupRows, iconFor, addLink, listHints, listKey, modelRows, moveIndex, mteDriftHint, mteRow, originIcon, parseRef, startNote, phaseText, attentionRow } from '../panel/logic.mjs'
+import { claimCallout, createSearcher, createWorkspaceArgs, filterRows, fitSelection, goalSlug, groupRows, iconFor, addLink, listHints, listKey, modelRows, moveIndex, mteDriftHint, mteRow, originIcon, parseRef, startNote, phaseText, attentionRow, filterRepos, groupRepos, osOf } from '../panel/logic.mjs'
 
 test('model rows: default first, labels when the CLI gives them, an unlisted current model stays', () => {
   const info = { models: [{ id: 'gemini-x-high', label: 'Gemini X (High)' }, { id: 'p/m' }] }
@@ -258,7 +258,7 @@ test('AC5: the new-workspace inputs exist hidden; the panel reveals them only wh
   const html = await readFile(new URL('../panel/index.html', import.meta.url), 'utf8')
   assert.match(html, /<input type="checkbox" id="new-ws"/)
   assert.match(html, /<div class="stack" id="ws-fields"[^>]*hidden/)
-  assert.match(html, /<select id="ws-repo"/)
+  assert.match(html, /<div class="field" id="ws-repo">/)
   assert.match(html, /id="ws-base" placeholder="Base branch \(empty: repo default\)"/)
   const js = await readFile(new URL('../panel/panel.js', import.meta.url), 'utf8')
   assert.match(js, /\$\('new-ws'\)\.onchange[^\n]*\n[^\n]*ws-fields'\)\.hidden = !/)
@@ -273,4 +273,17 @@ test('phase tag and attention rows', () => {
   assert.deepEqual(attentionRow({ kind: 'release', text: 't1 finished', run: 'Goal', dispatchId: 'ctx_1' }), { label: 'Idle terminal', text: 't1 finished', run: 'Goal', action: 'release' })
   assert.equal(attentionRow({ kind: 'ask', text: 'q', run: 'G', workspace: 'r::/p' }).action, 'focus')
   assert.equal(attentionRow({ kind: 'gate', text: 'q', run: 'G', workspace: null }).action, null)
+})
+
+test('repo picker: search by name, host or path; grouped by host; OS from platform', () => {
+  const repos = [
+    { key: 'a', name: 'app', host: 'this machine', path: '/code/app', platform: 'darwin', server: false },
+    { key: 'b', name: 'api', host: 'box', path: '/home/u/api', platform: 'linux', server: true },
+    { key: 'c', name: 'fotoclass', host: 'win-pc', path: 'C:\\code\\fotoclass', platform: 'win32', server: true }
+  ]
+  assert.deepEqual(filterRepos(repos, 'win').map((r) => r.key), ['c'])
+  assert.deepEqual(filterRepos(repos, 'home api').map((r) => r.key), ['b'])
+  assert.deepEqual(filterRepos(repos, '').map((r) => r.key), ['a', 'b', 'c'])
+  assert.deepEqual(groupRepos(repos).map((g) => [g.host, g.platform, g.server, g.repos.length]), [['this machine', 'darwin', false, 1], ['box', 'linux', true, 1], ['win-pc', 'win32', true, 1]])
+  assert.deepEqual(['darwin', 'win32', 'linux', null, 'aix'].map(osOf), ['mac', 'windows', 'linux', null, null])
 })
