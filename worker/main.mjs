@@ -8,6 +8,7 @@ import {
   describeClaim,
   dismissDepthReminder,
   ensureSetup,
+  mteIsCurrent,
   focusWorkspace,
   harnessList,
   installInWorkspace,
@@ -67,7 +68,7 @@ export default async function activate(orca) {
           result.ok
             ? result.needsConsent
               ? { status: 'needs-consent', message: result.message }
-              : { status: 'done', message: result.skipped || result.declined ? '' : `mte ${result.version} ready${result.installed ? ' (installed)' : ''}; skill installed.` }
+              : { status: 'done', message: result.skipped || result.declined ? '' : `mte ${result.version} ready${result.installed ? ' (installed)' : ''}${result.updated?.length ? ` (${result.updated.join('; ')})` : ''}; skill installed.` }
             : { status: 'error', message: result.error.message }
         )
         return result
@@ -157,7 +158,16 @@ export default async function activate(orca) {
     const mine = ++searchSeq
     return searchGoal(deps, input, { isStale: () => mine !== searchSeq })
   })
-  orca.panels.handle('workspace.install', async () => afterMutation(await installInWorkspace(deps)))
+  orca.panels.handle('workspace.install', async () => {
+    // an older mte would write an old skill: pressing Install is consent to bring mte up to date first, as Repair does
+    if (!(await mteIsCurrent(deps))) {
+      const setupResult = await runSetup(true)
+      if (!setupResult.ok || setupResult.needsConsent) {
+        return setupResult
+      }
+    }
+    return afterMutation(await installInWorkspace(deps))
+  })
   orca.panels.handle('setup.repair', () => runSetup(true))
   // "Not now": the needs-consent prompt is remembered as declined for this required version; Repair setup still runs it
   orca.panels.handle('setup.dismiss', async () => {

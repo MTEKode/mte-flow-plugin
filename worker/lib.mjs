@@ -1,7 +1,7 @@
 // Pure logic for the MTE Flow plugin. No Orca imports: every side effect comes in through `deps`
 // ({ exec, host, settings }) so the tests can stub child_process and the host API.
 import { execFile } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,7 +11,7 @@ import { createWorkspaceArgs, goalSlug, parseRef } from '../panel/logic.mjs'
 export const PROMPT_MAX = 4000
 export const TRUNCATION_MARKER = '\n[goal truncated]'
 /** The mte CLI version this plugin release is built for; the setup installs it when `mte` is missing or older. */
-export const REQUIRED_MTE_VERSION = '0.8.5'
+export const REQUIRED_MTE_VERSION = '0.8.6'
 export const MIN_NODE_MAJOR = 24
 export const tarballUrl = (version) =>
   `https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v${version}/mtekode-mte-${version}.tgz`
@@ -920,6 +920,84 @@ export async function shadowedMessage(deps, bin, required, current) {
   return `mte ${required} was installed${installedAt ? ` at ${installedAt}` : ''}, but \`${bin}\` on PATH runs ${found}${stale ? ` from ${stale}` : ''}. Remove that old copy (or put npm's global bin folder before it in PATH), then press Repair setup: agents and hooks run \`mte\` from PATH, so they would keep the old one.`
 }
 
+const folderOf = (p) => p.replace(/[\\/][^\\/]+$/, '')
+const MTE_PACKAGE = '@mtekode/mte'
+
+/** The npm prefix that owns an `mte` bin folder, when that prefix has our package installed: `<prefix>/bin` (POSIX) or `<prefix>` (Windows). */
+function npmPrefixOwning(binDir, exists) {
+  const win = process.platform === 'win32'
+  const prefix = win ? binDir : folderOf(binDir)
+  const pkg = win ? win32.join(prefix, 'node_modules', '@mtekode', 'mte', 'package.json') : `${prefix}/lib/node_modules/@mtekode/mte/package.json`
+  try {
+    return exists(pkg) && JSON.parse(readFileSync(pkg, 'utf8')).name === MTE_PACKAGE ? prefix : null
+  } catch {
+    return null
+  }
+}
+
+/** An MTE shim from before npm releases (the retired `~/.mte` flow): a small text file that names it. Anything else is left alone. */
+function isOldMteShim(file) {
+  try {
+    const text = readFileSync(file, 'utf8').slice(0, 4096)
+    return /\.mte[\\/]bin|mte\.mjs|@mtekode\/mte|mte-flow/.test(text)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Brings every older MTE copy that PATH finds before npm's fresh one up to date: one installed by another npm prefix
+ * (another Node, another global folder) is reinstalled into that same prefix; an old MTE shim is moved aside to
+ * `<file>.old` (reversible, never deleted). A file that is not recognisably MTE is never touched. Returns what it did.
+ */
+export async function updateShadowingMte(deps, bin, required) {
+  const exists = deps.exists ?? existsSync
+  const fresh = await npmGlobalMte(deps)
+  const done = []
+  const seen = new Set()
+  for (const file of await mteOnPath(deps, bin)) {
+    const dir = folderOf(file)
+    if (fresh && dir.toLowerCase() === folderOf(fresh).toLowerCase()) {
+      break // ours comes first from here on: nothing after it is ever run
+    }
+    if (seen.has(dir.toLowerCase())) {
+      continue // npm leaves mte, mte.cmd and mte.ps1 side by side: one decision per folder
+    }
+    seen.add(dir.toLowerCase())
+    const version = await tryExec(deps, file, ['--version'], { timeoutMs: 15_000 }).catch(() => ({ code: 1, stdout: '' }))
+    if (version.code === 0 && compareVersions(version.stdout, required) >= 0) {
+      continue
+    }
+    const prefix = npmPrefixOwning(dir, exists)
+    if (prefix) {
+      const res = await tryExec(deps, 'npm', ['i', '-g', '--prefix', prefix, tarballUrl(required)], { timeoutMs: 300_000 })
+      done.push(res.code === 0 ? `updated the mte in ${prefix} to ${required}` : `could not update the mte in ${prefix}: ${firstLine(res)}`)
+      continue
+    }
+    const shims = (process.platform === 'win32' ? ['mte', 'mte.cmd', 'mte.ps1', 'mte.bat'].map((n) => win32.join(dir, n)) : [file]).filter((f) => exists(f))
+    if (!shims.length || !shims.every(isOldMteShim)) {
+      done.push(`left ${file} alone: it is not recognisably MTE`)
+      continue
+    }
+    for (const shim of shims) {
+      try {
+        ;(deps.rename ?? renameSync)(shim, `${shim}.old`)
+        done.push(`moved the old ${shim} aside to ${shim}.old`)
+      } catch (error) {
+        done.push(`could not move ${shim} aside: ${String(error?.message ?? error)}`)
+      }
+    }
+  }
+  return done
+}
+
+/** True when `mte --version` answers at least the version this plugin needs. */
+export async function mteIsCurrent(deps) {
+  const settings = await readSettings(deps.host)
+  const res = await tryExec(deps, settings.mteBin, ['--version'], { timeoutMs: 15_000 })
+  return !res.missing && res.code === 0 && compareVersions(res.stdout, REQUIRED_MTE_VERSION) >= 0
+}
+
 const firstLine = (res) => ((res.stderr || res.stdout || '').trim().split('\n')[0] ?? '').slice(0, 300)
 
 /**
@@ -940,6 +1018,7 @@ export async function ensureSetup(deps, { force = false } = {}) {
   progress('Checking the mte CLI…')
   let current = await tryExec(deps, settings.mteBin, ['--version'], { timeoutMs: 15_000 })
   let installed = false
+  let updated = []
   if (current.missing || current.code !== 0 || compareVersions(current.stdout, required) < 0) {
     // `npm i -g` changes the machine globally: never unattended. Activation reports needs-consent instead;
     // Run setup and Repair setup call this with force, which is the consent itself. "Not now" (dismiss) stays until then.
@@ -969,8 +1048,14 @@ export async function ensureSetup(deps, { force = false } = {}) {
       return fail('setup', 'npm_failed', `\`npm i -g\` failed${detail ? `: ${detail}` : ''}. If it is a permissions error, point npm's global prefix at a folder you own (\`npm config set prefix ~/.npm-global\` and add its bin to PATH); never use sudo.`)
     }
     current = await tryExec(deps, settings.mteBin, ['--version'], { timeoutMs: 15_000 })
+    if (!current.missing && (current.code !== 0 || compareVersions(current.stdout, required) < 0)) {
+      progress('Updating an older mte found on PATH…')
+      updated = await updateShadowingMte(deps, settings.mteBin, required)
+      current = await tryExec(deps, settings.mteBin, ['--version'], { timeoutMs: 15_000 })
+    }
     if (current.missing || current.code !== 0 || compareVersions(current.stdout, required) < 0) {
-      return fail('setup', current.missing ? 'mte_not_on_path' : 'mte_shadowed', await shadowedMessage(deps, settings.mteBin, required, current))
+      const tried = updated.length ? ` Tried: ${updated.join('; ')}.` : ''
+      return fail('setup', current.missing ? 'mte_not_on_path' : 'mte_shadowed', `${await shadowedMessage(deps, settings.mteBin, required, current)}${tried}`)
     }
     installed = true
   }
@@ -980,7 +1065,7 @@ export async function ensureSetup(deps, { force = false } = {}) {
     return fail('setup', 'user_install_failed', `\`mte install --user\` failed${firstLine(skill) ? `: ${firstLine(skill)}` : ''}.`)
   }
   await deps.storage.set(setupKey(required), { at: new Date().toISOString() })
-  return { ok: true, version: parseVersion(current.stdout)?.join('.') ?? required, installed }
+  return { ok: true, version: parseVersion(current.stdout)?.join('.') ?? required, installed, updated }
 }
 
 export const isDepthReminderDismissed = async (storage) => Boolean(await storage.get(DEPTH_REMINDER_KEY))
