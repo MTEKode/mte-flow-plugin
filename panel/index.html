@@ -89,6 +89,8 @@
   .opt.link code { flex: none; color: var(--orca-muted-foreground); }
   .opt.link .t { flex: 1; min-width: 0; }
   .opt.link.linked { opacity: .6; }
+  .opt.link.exact .t { color: var(--orca-muted-foreground); }
+  .opt.active.link.exact .t { color: inherit; }
   .src-linear { color: var(--orca-foreground); }
   .spinner { width: 13px; height: 13px; flex: none; border-radius: 999px; border: 2px solid var(--orca-border); border-top-color: var(--orca-foreground); animation: spin .7s linear infinite; }
   .searching-row { align-items: center; }

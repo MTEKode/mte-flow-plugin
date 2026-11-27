@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
-import { claimCallout, createSearcher, createWorkspaceArgs, filterRows, fitSelection, goalSlug, groupRows, iconFor, addLink, listHints, listKey, modelRows, moveIndex, mteDriftHint, mteRow, originIcon, parseRef, startNote, phaseText, attentionRow, filterRepos, groupRepos, osOf, linkSource } from '../panel/logic.mjs'
+import { claimCallout, createSearcher, createWorkspaceArgs, filterRows, fitSelection, goalSlug, groupRows, iconFor, addLink, listHints, listKey, modelRows, moveIndex, mteDriftHint, mteRow, originIcon, parseRef, startNote, phaseText, attentionRow, filterRepos, groupRepos, osOf, linkSource, exactLink, withExact } from '../panel/logic.mjs'
 
 test('model rows: default first, labels when the CLI gives them, an unlisted current model stays', () => {
   const info = { models: [{ id: 'gemini-x-high', label: 'Gemini X (High)' }, { id: 'p/m' }] }
@@ -299,4 +299,19 @@ test('link search: the spinner starts on the first keystroke; every link knows i
     [{ kind: 'linear', url: 'https://linear.app/x/issue/ENG-1' }, { kind: 'pr', value: '12' }, { kind: 'issue', value: '4' }, { kind: 'reference', ref: 'https://gitlab.com/a/b/-/merge_requests/3' }, { kind: 'reference', ref: 'https://acme.atlassian.net/browse/OPS-1' }, { kind: 'reference', ref: 'https://example.com' }].map(linkSource),
     ['linear', 'github', 'github', 'gitlab', 'jira', 'web']
   )
+})
+
+test('typed links become the top row: a key is looked up for its title, a bare URL is not searched', () => {
+  assert.deepEqual(exactLink('eng-1051'), { kind: 'linear', id: 'ENG-1051', url: 'ENG-1051', title: null, exact: true, search: 'ENG-1051' })
+  assert.equal(exactLink('https://linear.app/c/issue/ENG-7/x').search, 'ENG-7')
+  assert.deepEqual([exactLink('#45').id, exactLink('#45').search], ['#45', '#45'])
+  assert.equal(exactLink('https://github.com/a/b/pull/3').search, null)
+  assert.equal(exactLink('https://example.com/x').kind, 'reference')
+  assert.equal(exactLink('instagram cards'), null)
+  const ex = exactLink('eng-1051')
+  const found = [{ kind: 'linear', id: 'ENG-9', title: 'other' }, { kind: 'linear', id: 'ENG-1051', title: 'Real title' }]
+  assert.deepEqual(withExact(ex, found).map((i) => i.title), ['Real title', 'other'], 'the matching result replaces the placeholder on top')
+  assert.deepEqual(withExact(ex, [{ kind: 'linear', id: 'ENG-9' }]).map((i) => i.id), ['ENG-1051', 'ENG-9'])
+  assert.deepEqual(withExact(null, found), found)
+  assert.deepEqual(withExact(exactLink('#45'), [{ kind: 'linear', id: '#45' }, { kind: 'pr', id: '#45', title: 'PR' }])[0].title, 'PR', 'a GitHub number never matches a Linear row')
 })

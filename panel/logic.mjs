@@ -335,3 +335,30 @@ export function linkSource(item) {
   if (host.endsWith('atlassian.net') || host.includes('jira')) return 'jira'
   return 'web'
 }
+
+/**
+ * The suggestion row for text that is already a link (`ENG-1051`, `#45`, a URL): it shows on top of the list and is
+ * picked like any other row. `search` is what to look up for its title (a key or number), null for a bare URL.
+ */
+export function exactLink(text) {
+  const t = String(text ?? '').trim()
+  const p = parseRef(t)
+  if (!p) return null
+  const isUrl = /^https?:\/\//i.test(t)
+  if (p.kind === 'linear') {
+    const key = isUrl ? (/\/issue\/([A-Za-z]+-\d+)/.exec(t)?.[1] ?? '').toUpperCase() : t.toUpperCase()
+    return { kind: 'linear', id: key || null, url: isUrl ? t : key, title: null, exact: true, search: key || null }
+  }
+  if (p.kind === 'pr' || p.kind === 'issue') {
+    return { kind: p.kind, id: `#${p.value}`, url: isUrl ? t : `#${p.value}`, title: null, exact: true, search: isUrl ? null : `#${p.value}` }
+  }
+  return { kind: 'reference', id: null, url: t, title: null, exact: true, search: null }
+}
+
+/** The list the link field shows: search results, with the exact row on top (or the matching result moved up in its place). */
+export function withExact(exact, items) {
+  if (!exact) return items
+  const same = (it) => exact.id && String(it.id ?? '').toUpperCase() === exact.id.toUpperCase() && (exact.kind === 'linear' ? it.kind === 'linear' : it.kind !== 'linear')
+  const hit = items.find(same)
+  return hit ? [hit, ...items.filter((it) => it !== hit)] : [exact, ...items]
+}
