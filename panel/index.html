@@ -85,6 +85,17 @@
   .badge { font-size: 11px; border-radius: 999px; background: var(--orca-primary); color: var(--orca-primary-foreground); padding: 1px 8px; }
   .chip { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; border: 1px solid var(--orca-border); border-radius: 999px; padding: 2px 4px 2px 8px; font-size: 12px; }
   .chip > .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .opt.link { align-items: center; }
+  .opt.link code { flex: none; color: var(--orca-muted-foreground); }
+  .opt.link .t { flex: 1; min-width: 0; }
+  .opt.link.linked { opacity: .6; }
+  .src-linear { color: var(--orca-foreground); }
+  .spinner { width: 13px; height: 13px; flex: none; border-radius: 999px; border: 2px solid var(--orca-border); border-top-color: var(--orca-foreground); animation: spin .7s linear infinite; }
+  .searching-row { align-items: center; }
+  .field.searching > #links { background-image: linear-gradient(90deg, transparent, color-mix(in srgb, var(--orca-foreground) 8%, transparent), transparent); background-size: 200% 100%; animation: sweep 1.2s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes sweep { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  @media (prefers-reduced-motion: reduce) { .spinner, .field.searching > #links { animation: none; } }
   .chip button { flex: none; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 999px; line-height: 1; }
   code { font-family: var(--orca-font-mono, ui-monospace, monospace); font-size: 12px; }
   [hidden] { display: none !important; }
@@ -97,7 +108,7 @@
 
   <div class="field">
     <label for="goal">Goal</label>
-    <textarea id="goal" placeholder="Describe the goal…"></textarea>
+    <textarea id="goal" placeholder="Describe the goal, or just add links below…"></textarea>
   </div>
 
   <div class="field">

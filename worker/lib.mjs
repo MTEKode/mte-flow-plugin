@@ -11,7 +11,7 @@ import { createWorkspaceArgs, goalSlug, parseRef } from '../panel/logic.mjs'
 export const PROMPT_MAX = 4000
 export const TRUNCATION_MARKER = '\n[goal truncated]'
 /** The mte CLI version this plugin release is built for; the setup installs it when `mte` is missing or older. */
-export const REQUIRED_MTE_VERSION = '0.8.11'
+export const REQUIRED_MTE_VERSION = '0.8.12'
 export const MIN_NODE_MAJOR = 24
 export const tarballUrl = (version) =>
   `https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v${version}/mtekode-mte-${version}.tgz`
@@ -266,6 +266,12 @@ async function applyPins(deps, settings, cwd) {
 const CHOICE_SETTINGS = ['plannerAgent', 'plannerModel', 'plannerSurface', 'plannerEffort', 'workerAgent', 'workerModel', 'workerEffort', 'qaAgent', 'qaModel', 'qaEffort']
 
 /** The run's links: each ref parsed (trust boundary: the panel's text is re-parsed here), or an error naming the bad one. */
+/** A goal written from the run's links when the person wrote none: the planner reads each linked item. */
+export function goalFromLinks(refs) {
+  const list = (Array.isArray(refs) ? refs : []).map((r) => String(r).trim()).filter(Boolean)
+  return list.length === 1 ? `Work on the linked item: ${list[0]}` : `Work on the linked items: ${list.join(', ')}`
+}
+
 /** The run's links plus the Linear issues and GitHub PRs/issues the goal itself names by URL (a goal that is just a ticket URL links that ticket). */
 export function withGoalLinks(links, goal) {
   const out = [...links]
@@ -370,7 +376,8 @@ async function isClaimStale(deps, claim) {
  * released instead of stopping the run.
  */
 export async function startRun(deps, input = {}) {
-  const { goal, replace = false, newWorkspace = false } = input
+  let { goal } = input
+  const { replace = false, newWorkspace = false } = input
   const settings = await readSettings(deps.host)
   // the panel's selection beats the settings (which only seed it)
   for (const key of CHOICE_SETTINGS) {
@@ -381,13 +388,18 @@ export async function startRun(deps, input = {}) {
   if (!SURFACES.includes(settings.plannerSurface)) {
     settings.plannerSurface = 'chat'
   }
-  if (!String(goal ?? '').trim()) {
-    return fail('input', 'empty_goal', 'Write a goal first.')
-  }
   const { links: chips, error: linkError } = parseLinks(input.links)
   if (linkError) {
     return fail('input', 'bad_link', linkError)
   }
+  if (!String(goal ?? '').trim() && !chips.length) {
+    return fail('input', 'empty_goal', 'Write a goal or add a link.')
+  }
+  // the links are the goal when none is written: the planner reads the linked tickets first anyway
+  const written = String(goal ?? '').trim()
+  goal = written || goalFromLinks(input.links)
+  // a generated goal names the workspace by its links (eng-1091), not by the "Work on…" wrapper
+  input = { ...input, goal, slugSource: written || (input.links ?? []).join(' ') }
   const links = withGoalLinks(chips, goal)
   const ws = await resolveWorkspace(deps.host)
   if (newWorkspace) {
@@ -571,7 +583,7 @@ export async function workspaceRow(deps, ws) {
  * the created worktree's name; it is never auto-deleted.
  */
 async function startRunInNewWorkspace(deps, settings, ws, input, links) {
-  const name = String(input.workspaceName ?? '').trim() || goalSlug(String(input.goal ?? ''))
+  const name = String(input.workspaceName ?? '').trim() || goalSlug(String(input.slugSource ?? input.goal ?? ''))
   const key = String(input.repoKey ?? (input.repoId ? `local|${input.repoId}` : '')).trim()
   let repoId = null
   let repo = null

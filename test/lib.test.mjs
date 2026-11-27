@@ -26,6 +26,7 @@ import {
   repoOfWorkspace,
   withGoalLinks,
   listRepos,
+  goalFromLinks,
   remoteSetupLine,
   readClaim,
   resolveChoices,
@@ -1187,4 +1188,16 @@ test('a failed remote setup keeps its terminal open and names the reason; unsafe
   assert.match(res.error.message, /npm ERR! 404/)
   assert.equal(orcaArgs(calls, 'terminal', 'close').length, 0)
   assert.equal(remoteSetupLine({ workerAgent: 'claude', workerModel: 'm$(whoami)' }), null)
+})
+
+test('no goal is needed when links are added: the links become the goal and name the workspace', async () => {
+  assert.equal(goalFromLinks(['ENG-1091']), 'Work on the linked item: ENG-1091')
+  assert.equal(goalFromLinks(['ENG-1', '#45']), 'Work on the linked items: ENG-1, #45')
+  const { deps, calls } = newWsStubs({ ws: null })
+  const res = await startRun(deps, { goal: '  ', links: ['https://linear.app/c/issue/ENG-1091'], newWorkspace: true, repoId: 'r-7' })
+  assert.equal(res.ok, true, JSON.stringify(res))
+  assert.deepEqual(orcaArgs(calls, 'worktree', 'create')[0].slice(2, 4), ['--name', 'eng-1091'])
+  const prompt = orcaArgs(calls, 'agent', 'launch')[0].at(-2)
+  assert.ok(prompt.startsWith('/mte-flow Work on the linked item: https://linear.app/c/issue/ENG-1091'), prompt)
+  assert.equal((await startRun(newWsStubs({ ws: null }).deps, { goal: '', newWorkspace: true, repoId: 'r-7' })).error.code, 'empty_goal')
 })

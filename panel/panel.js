@@ -1,5 +1,5 @@
 // MTE Flow panel (html, isolated frame): all data comes from the worker through orca.plugin.request.
-import { addLink, attentionRow, claimCallout, createSearcher, filterRepos, filterRows, fitSelection, groupRepos, groupRows, osOf, iconFor, KIND_LABEL, listHints, listKey, modelRows, mteDriftHint, mteRow, originIcon, originOf, parseRef, phaseText, startNote } from './logic.mjs'
+import { addLink, attentionRow, linkSource, claimCallout, createSearcher, filterRepos, filterRows, fitSelection, groupRepos, groupRows, osOf, iconFor, listHints, listKey, modelRows, mteDriftHint, mteRow, originIcon, originOf, parseRef, phaseText, startNote } from './logic.mjs'
 
 const $ = (id) => document.getElementById(id)
 const req = (name, params = {}) => orca.plugin.request(name, params, { timeoutMs: 120000 })
@@ -87,6 +87,16 @@ const SVG = {
   linux: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2c-2.3 0-3.7 1.9-3.7 4.5 0 1.3.2 2.2-.6 3.6C6.5 12 5 14.4 5 16.9c0 1 .3 1.8.8 2.4l-1.2 1.8c-.3.5.1 1 .6 1h4.1c.5 0 .9-.3 1.1-.7.5.1 1 .2 1.6.2s1.1-.1 1.6-.2c.2.4.6.7 1.1.7h4.1c.5 0 .9-.5.6-1l-1.2-1.8c.5-.6.8-1.4.8-2.4 0-2.5-1.5-4.9-2.7-6.8-.8-1.4-.6-2.3-.6-3.6C15.7 3.9 14.3 2 12 2zm-1.6 3.6c.5 0 .8.5.8 1.1s-.4 1.1-.8 1.1-.8-.5-.8-1.1.4-1.1.8-1.1zm3.2 0c.5 0 .8.5.8 1.1s-.4 1.1-.8 1.1-.8-.5-.8-1.1.4-1.1.8-1.1zM12 12c1.7 0 3 1.8 3 4s-1.3 4-3 4-3-1.8-3-4 1.3-4 3-4z"/></svg>',
   server: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>'
 }
+// link origins, drawn like their own marks (monochrome, currentColor)
+Object.assign(SVG, {
+  linear: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M2.6 14.1 9.9 21.4c-3.7-.8-6.5-3.6-7.3-7.3zM2.3 11l10.7 10.7c.8-.1 1.6-.3 2.3-.5L2.8 8.7c-.3.7-.4 1.5-.5 2.3zm1.5-4.3 13.5 13.5c.6-.3 1.2-.7 1.7-1.2L5 5c-.5.5-.9 1.1-1.2 1.7zM6.6 3.6A9.7 9.7 0 0 1 12 2a10 10 0 0 1 10 10c0 2-.6 3.9-1.6 5.4z"/></svg>',
+  github: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.2 19.5c.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.3-3.4-1.3-.4-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.6 2.4 1.1 3 .9.1-.7.4-1.1.6-1.4-2.2-.3-4.6-1.1-4.6-5 0-1.1.4-2 1-2.7-.1-.3-.4-1.3.1-2.7 0 0 .8-.3 2.8 1a9.6 9.6 0 0 1 5 0c1.9-1.3 2.8-1 2.8-1 .5 1.4.2 2.4.1 2.7.6.7 1 1.6 1 2.7 0 3.9-2.3 4.7-4.6 4.9.4.3.7.9.7 1.9V21c0 .3.2.6.7.5A10 10 0 0 0 12 2z"/></svg>',
+  gitlab: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="m22.7 13.4-1.2-3.7-2.4-7.3a.4.4 0 0 0-.8 0l-2.4 7.3H8.1L5.7 2.4a.4.4 0 0 0-.8 0L2.5 9.7l-1.2 3.7c-.1.3 0 .7.3.9L12 21.9l10.4-7.6c.3-.2.4-.6.3-.9z"/></svg>',
+  jira: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11.6 2H2a4.3 4.3 0 0 0 4.3 4.3h1.8V8a4.3 4.3 0 0 0 4.3 4.3V2.8a.8.8 0 0 0-.8-.8zm4.7 4.7H6.7A4.3 4.3 0 0 0 11 11h1.8v1.7a4.3 4.3 0 0 0 4.3 4.3V7.5a.8.8 0 0 0-.8-.8zM21 11.4h-9.6a4.3 4.3 0 0 0 4.3 4.3h1.8v1.7a4.3 4.3 0 0 0 4.3 4.3v-9.5a.8.8 0 0 0-.8-.8z"/></svg>',
+  web: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>'
+})
+const SOURCE_LABEL = { linear: 'Linear', github: 'GitHub', gitlab: 'GitLab', jira: 'Jira', web: 'Link' }
+const linkIcon = (it) => el('span', { className: `os src src-${linkSource(it)}`, title: SOURCE_LABEL[linkSource(it)], innerHTML: SVG[linkSource(it)] })
 const OS_LABEL = { mac: 'macOS', windows: 'Windows', linux: 'Linux' }
 const svgIcon = (name, title) => el('span', { className: 'os', title, innerHTML: SVG[name] })
 /** OS icon of a host plus a server icon when it is another machine. */
@@ -204,17 +214,28 @@ const setLinkHint = (text) => {
   hint.textContent = text ?? ''
   hint.hidden = !text
 }
-const closeLinks = () => { linksList.hidden = true; links.setAttribute('aria-expanded', 'false'); links.setAttribute('aria-activedescendant', ''); linkItems = [] }
+let linkSearching = null // the query being searched, while the spinner shows
+const linkBox = links.parentElement
+const closeLinks = () => { linkSearching = null; linkBox.classList.remove('searching'); linksList.hidden = true; links.setAttribute('aria-expanded', 'false'); links.setAttribute('aria-activedescendant', ''); linkItems = [] }
 function drawLinks() {
+  linkBox.classList.toggle('searching', Boolean(linkSearching))
   linksList.replaceChildren(
+    ...(linkSearching ? [el('div', { className: 'opt muted searching-row', role: 'status' }, el('span', { className: 'spinner', ariaHidden: 'true' }), el('span', { className: 't', textContent: `Searching Linear and GitHub for “${linkSearching}”…` }))] : []),
     ...linkItems.map((it, i) => {
-      const row = el('div', { id: `lk-${i}`, className: 'opt' + (i === li ? ' active' : ''), role: 'option' }, el('span', { className: 'tag', textContent: KIND_LABEL[it.kind] ?? 'Link' }), el('code', { textContent: it.id ?? '' }), el('span', { className: 't', textContent: it.title ?? it.url ?? '' }))
+      const linked = st.links.some((l) => l.ref === it.url || l.label === it.id)
+      const kind = it.kind === 'pr' ? 'PR' : it.kind === 'issue' ? 'Issue' : null
+      const row = el('div', { id: `lk-${i}`, className: 'opt link' + (i === li ? ' active' : '') + (linked ? ' linked' : ''), role: 'option', ariaSelected: String(linked) },
+        linkIcon(it), el('code', { textContent: it.id ?? '' }), el('span', { className: 't', textContent: it.title ?? it.url ?? '' }),
+        ...(kind ? [el('span', { className: 'tag', textContent: kind })] : []), ...(linked ? [el('span', { className: 'tag', textContent: '✓ linked' })] : []))
       row.onmousedown = (e) => { e.preventDefault(); sendLink(it) }
       return row
-    })
+    }),
+    ...(!linkSearching && linkItems.length === 0 && linkHints.length ? linkHints.map((h) => el('div', { className: 'opt muted', textContent: h })) : []),
+    ...(!linkSearching && linkItems.length === 0 && linkHints.length === 0 && linkQueried ? [el('div', { className: 'opt muted', textContent: 'No issues or PRs match.' })] : [])
   )
-  linksList.hidden = linkItems.length === 0
-  links.setAttribute('aria-expanded', String(linkItems.length > 0))
+  const open = Boolean(linkSearching) || linkItems.length > 0 || linkHints.length > 0 || linkQueried
+  linksList.hidden = !open
+  links.setAttribute('aria-expanded', String(open))
   links.setAttribute('aria-activedescendant', linkItems[li] ? `lk-${li}` : '')
   linksList.querySelector('.active')?.scrollIntoView({ block: 'nearest' })
 }
@@ -236,9 +257,12 @@ function unlink(link) {
   render()
 }
 // nothing is highlighted until the person moves through the list: Enter never picks a suggestion on its own
+let linkHints = []
+let linkQueried = false
 const linkSearch = createSearcher({
   request: (q) => req('goal.search', { q }),
-  onResult: (res) => { linkItems = res?.items ?? []; li = -1; drawLinks() }
+  onSearching: (q) => { linkSearching = q; drawLinks() },
+  onResult: (res) => { linkSearching = null; linkItems = res?.items ?? []; linkHints = res?.hints ?? []; linkQueried = Boolean(res); li = -1; drawLinks() }
 })
 links.addEventListener('input', () => {
   setLinkHint('')
@@ -256,7 +280,7 @@ links.addEventListener('keydown', (e) => {
   else if (r.action === 'close') closeLinks()
   else drawLinks()
 })
-links.addEventListener('blur', () => setTimeout(closeLinks, 120))
+links.addEventListener('blur', () => setTimeout(() => { linkSearch.cancel(); linkHints = []; linkQueried = false; closeLinks() }, 120))
 
 // ---- actions ----
 async function act(name, run, success) {
@@ -347,12 +371,13 @@ function render() {
   if (!repos.some((r) => r.key === st.repoKey)) st.repoKey = repos.some((r) => r.key === s?.focusedRepoKey) ? s.focusedRepoKey : ''
   repoPick.label()
   const chips = st.links
+  goal.placeholder = chips.length ? 'Optional: the linked items are the goal. Add context if you want…' : 'Describe the goal, or just add links below…'
   const chipBox = $('chips')
   chipBox.hidden = chips.length === 0
   chipBox.replaceChildren(
     ...chips.map((l) =>
-      el('span', { className: 'chip', title: l.url || l.label },
-        el('span', { className: 'tag', textContent: KIND_LABEL[l.kind] ?? 'Link' }),
+      el('span', { className: 'chip', title: l.ref || l.label },
+        linkIcon(l),
         el('span', { className: 't', textContent: l.label }),
         el('button', { type: 'button', textContent: '×', ariaLabel: `Remove ${l.label}`, onclick: () => unlink(l) }))
     )
