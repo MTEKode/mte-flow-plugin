@@ -377,15 +377,16 @@ export async function startRun(deps, input = {}) {
     return fail('input', 'bad_link', linkError)
   }
   const ws = await resolveWorkspace(deps.host)
+  if (newWorkspace) {
+    // a new workspace needs a repo, not a focused workspace: the panel's repo choice wins, the focused one is the fallback
+    return startRunInNewWorkspace(deps, settings, ws, input, links)
+  }
   if (!ws) {
     return fail('workspace', 'no_workspace', 'No workspace is focused.')
   }
   const refused = checkWorkspaceTarget(deps, ws)
   if (refused) {
     return refused
-  }
-  if (newWorkspace) {
-    return startRunInNewWorkspace(deps, settings, ws, input, links)
   }
   // a live planner may be mid-run in this workspace: never drop its claim (or change its worker pin) unasked
   const existing = await readClaim(deps, settings, ws.path)
@@ -441,6 +442,24 @@ function launchRecord(goal, ws, settings) {
   }
 }
 
+/** Git repos registered in Orca, for the new-workspace repo picker; [] when Orca cannot list them. */
+export async function listRepos(deps) {
+  try {
+    const { repos = [] } = await orcaJson(deps, ['repo', 'list'])
+    return repos.filter((r) => (r.kind ?? 'git') === 'git').map((r) => ({ id: r.id, name: r.displayName || r.path.split(/[\\/]/).pop(), path: r.path }))
+  } catch {
+    return []
+  }
+}
+
+/** The repo a focused workspace belongs to (Orca ids are `<repoId>::<path>`; the path prefix is the fallback), or null. */
+export function repoOfWorkspace(repos, ws) {
+  if (!ws) {
+    return null
+  }
+  return repos.find((r) => String(ws.id ?? '').startsWith(`${r.id}::`)) ?? repos.find((r) => ws.path === r.path || String(ws.path ?? '').startsWith(`${r.path}/`)) ?? null
+}
+
 /** `worktree show`'s row for the focused workspace: the repo id (`worktree create --repo` needs it; path: only resolves main checkouts, live-probed). */
 export async function workspaceRow(deps, ws) {
   const shown = await orcaJson(deps, ['worktree', 'show', ...worktreeTarget(ws)])
@@ -456,16 +475,32 @@ export async function workspaceRow(deps, ws) {
  */
 async function startRunInNewWorkspace(deps, settings, ws, input, links) {
   const name = String(input.workspaceName ?? '').trim() || goalSlug(String(input.goal ?? ''))
-  let row
-  try {
-    row = await workspaceRow(deps, ws)
-  } catch (error) {
-    return fail('create', 'worktree_read_failed', `Could not read the focused workspace: ${String(error?.message ?? error)}`)
+  let repoId = String(input.repoId ?? '').trim()
+  if (repoId) {
+    // trust boundary: only a repo Orca knows
+    if (!(await listRepos(deps)).some((r) => r.id === repoId)) {
+      return fail('input', 'bad_repo', 'Pick the repo for the new workspace from the list.')
+    }
+  } else {
+    if (!ws) {
+      return fail('input', 'no_repo', 'Pick the repo for the new workspace.')
+    }
+    const refused = checkWorkspaceTarget(deps, ws)
+    if (refused) {
+      return refused
+    }
+    let row
+    try {
+      row = await workspaceRow(deps, ws)
+    } catch (error) {
+      return fail('create', 'worktree_read_failed', `Could not read the focused workspace: ${String(error?.message ?? error)}`)
+    }
+    if (!row.repoId) {
+      return fail('create', 'no_repo', `The focused workspace ${ws.name} does not report a repo id: pick the repo for the new workspace.`)
+    }
+    repoId = row.repoId
   }
-  if (!row.repoId) {
-    return fail('create', 'no_repo', `The focused workspace ${ws.name} does not report a repo id: the new-workspace start needs one.`)
-  }
-  const { argv, deferred } = createWorkspaceArgs({ name, repoId: row.repoId, base: input.baseBranch, links })
+  const { argv, deferred } = createWorkspaceArgs({ name, repoId, base: input.baseBranch, links })
   let created
   try {
     created = (await orcaJson(deps, argv))?.worktree
