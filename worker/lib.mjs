@@ -11,7 +11,7 @@ import { createWorkspaceArgs, goalSlug, parseRef } from '../panel/logic.mjs'
 export const PROMPT_MAX = 4000
 export const TRUNCATION_MARKER = '\n[goal truncated]'
 /** The mte CLI version this plugin release is built for; the setup installs it when `mte` is missing or older. */
-export const REQUIRED_MTE_VERSION = '0.8.13'
+export const REQUIRED_MTE_VERSION = '0.8.14'
 export const MIN_NODE_MAJOR = 24
 export const tarballUrl = (version) =>
   `https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v${version}/mtekode-mte-${version}.tgz`
@@ -184,7 +184,7 @@ export async function readSettings(host) {
 
 /** The focused workspace as `workspace.list` knows it (its id is what the other workspace methods take), or null. */
 export async function resolveWorkspace(host) {
-  const ctx = await host.call('workspace.readContext', {})
+  const ctx = (await host.call('workspace.readContext', {})) ?? host.lastContext?.() ?? null
   if (!ctx) {
     return null
   }

@@ -39,8 +39,18 @@ let searchSeq = 0
 
 /** @type {import('orca/worker').Activate} */
 export default async function activate(orca) {
+  // The workspace the person last had in front of them: clicking into this panel can leave Orca with no focused
+  // workspace (readContext answers null), so the last real one from `workspace.changed` stands in for it.
+  let lastContext = null
+  orca.events?.on?.('workspace.changed', ({ context }) => {
+    if (context?.workspaceId) {
+      lastContext = context
+    }
+    orca.panels.post('state.changed', {})
+  })
   const host = {
     call: (method, params) => orca.host.call(method, params),
+    lastContext: () => lastContext,
     settings: async () =>
       Object.fromEntries(await Promise.all(SETTING_KEYS.map(async (k) => [k, await orca.settings.get(k)])))
   }
