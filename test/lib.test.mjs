@@ -539,7 +539,8 @@ test('version sites stay aligned: REQUIRED === CLI package.json === plugin manif
   assert.equal(REQUIRED_MTE_VERSION, cliPkg.version, 'packages/mte/package.json must match REQUIRED_MTE_VERSION')
   assert.equal(REQUIRED_MTE_VERSION, JSON.parse(manifestText).version, 'orca-plugin.json must match REQUIRED_MTE_VERSION')
   const mteBin = JSON.parse(manifestText).contributes.settings.find((s) => s.key === 'mteBin')
-  assert.ok(mteBin.description.includes(TARBALL), 'manifest mteBin description must carry the REQUIRED tarball URL')
+  // the settings schema must not change between releases: Orca keeps a plugin's approval only for updates that ask no new access, and a changed setting counts as new access
+  assert.doesNotMatch(mteBin.description, /\d+\.\d+\.\d+/, 'manifest mteBin description must not carry a version')
   assert.ok(readmeText.includes(TARBALL), 'README install commands must carry the REQUIRED tarball URL')
   // no stale tarball URL may survive anywhere the person reads it
   for (const [name, text] of [['orca-plugin.json', manifestText], ['README.md', readmeText], ['worker/lib.mjs', libText]]) {
