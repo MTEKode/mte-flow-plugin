@@ -8,6 +8,7 @@ import {
   describeClaim,
   dismissDepthReminder,
   ensureSetup,
+  findRemoteWorkspace,
   listRepos,
   repoOfWorkspace,
   mteIsCurrent,
@@ -51,6 +52,8 @@ export default async function activate(orca) {
   const host = {
     call: (method, params) => orca.host.call(method, params),
     lastContext: () => lastContext,
+    // a focused workspace that is not on this machine is looked up on the paired Orca servers
+    findRemote: (ctx) => findRemoteWorkspace(deps, ctx),
     settings: async () =>
       Object.fromEntries(await Promise.all(SETTING_KEYS.map(async (k) => [k, await orca.settings.get(k)])))
   }
@@ -125,7 +128,7 @@ export default async function activate(orca) {
     // the focused workspace's planner claim: the panel warns about a conflict before Start, not after a failed one
     let claim = null
     let claimError = null
-    if (workspace) {
+    if (workspace && !workspace.env) {
       const res = await readClaim(deps, settings, workspace.path)
       if (res.ok) {
         if (res.claim?.claimed) {

@@ -28,6 +28,8 @@ import {
   listRepos,
   goalFromLinks,
   resolveWorkspace,
+  findRemoteWorkspace,
+  installInWorkspace as installHere,
   remoteSetupLine,
   readClaim,
   resolveChoices,
@@ -1119,7 +1121,7 @@ const SETUPS_LOCAL = { setups: [
 ] }
 const SETUPS_PAIRED = { setups: [{ id: 'ps-win', repoId: 'r-9', hostId: 'local', path: 'C:\\code\\fotoclass', displayName: 'fotoclass', kind: 'git', setupState: 'ready' }] }
 
-function remoteStubs({ terminalTail = ['MTE_SETUP_OK'] } = {}) {
+function remoteStubs({ terminalTail = ['MTE_SETUP_OK'], probeTail = null } = {}) {
   const { deps, calls } = newWsStubs({ ws: null })
   const base = deps.exec
   deps.exec = async (file, args, opts) => {
@@ -1136,7 +1138,10 @@ function remoteStubs({ terminalTail = ['MTE_SETUP_OK'] } = {}) {
       calls.push({ kind: 'exec', file, args })
       return ok({ terminal: { handle: 'term_setup' } })
     }
-    if (file === ORCA && args[0] === 'terminal' && args[1] === 'read') return ok({ terminal: { handle: 'term_setup', tail: terminalTail } })
+    if (file === ORCA && args[0] === 'terminal' && args[1] === 'read') {
+      const probing = probeTail && calls.filter((c) => c.args?.[0] === 'terminal' && c.args?.[1] === 'create').length === 1
+      return ok({ terminal: { handle: 'term_setup', tail: probing ? probeTail : terminalTail } })
+    }
     if (file === ORCA && args[0] === 'terminal' && args[1] === 'close') {
       calls.push({ kind: 'exec', file, args })
       return ok({})
@@ -1171,11 +1176,11 @@ test('a new workspace on a paired server is created there, mte is prepared in a 
   const create = orcaArgs(calls, 'worktree', 'create')[0]
   assert.deepEqual(create.slice(0, 6), ['worktree', 'create', '--name', 'eng-1091', '--project-host-setup', 'ps-win'])
   assert.ok(create.join(' ').includes('--environment env-1'), create.join(' '))
-  const term = orcaArgs(calls, 'terminal', 'create')[0]
+  const term = orcaArgs(calls, 'terminal', 'create').at(-1) // after the `mte --version` probe
   assert.ok(term.join(' ').includes('--environment env-1'))
   const line = term[term.indexOf('--command') + 1]
   assert.match(line, /^npm i -g https:\/\/github\.com\/MTEKode\/mte-flow-plugin\/releases\/download\/mte-v[\d.]+\/mtekode-mte-[\d.]+\.tgz && mte install && mte install --user && mte pin set --agent claude --model opus && mte pin set --agent claude --model sonnet --role qa && echo MTE_SETUP_"OK" \|\| echo MTE_SETUP_"FAILED"$/)
-  assert.equal(orcaArgs(calls, 'terminal', 'close').length, 1, 'a successful setup terminal is closed')
+  assert.equal(orcaArgs(calls, 'terminal', 'close').length, 2, 'the probe and the setup terminals close when they succeed')
   assert.ok(!calls.some((c) => c.kind === 'exec' && c.file !== ORCA && c.args[0] === 'install'), 'mte never runs locally for a remote workspace')
   const launch = orcaArgs(calls, 'agent', 'launch')[0]
   assert.ok(launch.join(' ').includes('--environment env-1'), launch.join(' '))
@@ -1210,4 +1215,52 @@ test('with no focused workspace right now (the click went to this panel), the la
   assert.equal((await resolveWorkspace(host(null, last)))?.path, '/wt/eng-1051')
   assert.equal((await resolveWorkspace(host({ workspaceId: 'identity:wt2:local:a', branch: 'development', displayName: 'development', terminals: [] }, last)))?.path, '/repo', 'a live focus always wins')
   assert.equal(await resolveWorkspace(host(null, null)), null)
+})
+
+// ---- focused workspace on a paired Orca server (the sidebar of this Orca shows it, workspace.list does not) ----
+
+const REMOTE_ROW = { id: 'r-1::/Users/m/wt/eng-1051', instanceId: 'ee3a', identity: { instanceId: 'ee3a' }, path: '/Users/m/wt/eng-1051', branch: 'refs/heads/MTEKode/eng-1051', displayName: 'eng-1051' }
+const REMOTE_CTX = { workspaceId: 'identity:wt2:runtime-mac:ee3a', branch: 'MTEKode/eng-1051', displayName: 'eng-1051', terminals: [] }
+
+function pairedStubs() {
+  const s = remoteStubs()
+  const base = s.deps.exec
+  s.deps.exec = async (file, args, opts) => {
+    if (file === ORCA && args[0] === 'worktree' && args[1] === 'list') {
+      return { code: 0, stdout: JSON.stringify({ ok: true, result: { worktrees: args.includes('env-1') ? [REMOTE_ROW] : [] } }), stderr: '' }
+    }
+    return base(file, args, opts)
+  }
+  s.deps.host = { ...s.deps.host, call: async (m, p) => (m === 'workspace.readContext' ? REMOTE_CTX : m === 'workspace.list' ? { workspaces: [] } : null), findRemote: (ctx) => findRemoteWorkspace(s.deps, ctx) }
+  return s
+}
+
+test('a focused workspace on a paired server is found there by its instance id', async () => {
+  const { deps } = pairedStubs()
+  const ws = await resolveWorkspace(deps.host)
+  assert.deepEqual([ws?.id, ws?.env, ws?.host, ws?.branch], ['r-1::/Users/m/wt/eng-1051', 'env-1', 'win-pc', 'MTEKode/eng-1051'])
+  assert.equal(await findRemoteWorkspace(deps, { workspaceId: 'identity:wt2:x:nope', branch: 'other', displayName: 'other' }), null)
+})
+
+test('Start run and Install on a paired server workspace prepare mte there and launch there, never running mte here', async () => {
+  const { deps, calls } = pairedStubs()
+  const res = await startRun(deps, { goal: '', links: ['ENG-1051'], workerAgent: 'claude', workerModel: 'opus' })
+  assert.equal(res.ok, true, JSON.stringify(res))
+  assert.ok(orcaArgs(calls, 'terminal', 'create')[0].join(' ').includes('--worktree r-1::/Users/m/wt/eng-1051 --title MTE setup'))
+  assert.ok(orcaArgs(calls, 'terminal', 'create')[0].includes('env-1'))
+  const launch = orcaArgs(calls, 'agent', 'launch')[0].join(' ')
+  assert.ok(launch.includes('--worktree r-1::/Users/m/wt/eng-1051') && launch.includes('--environment env-1'), launch)
+  assert.ok(!calls.some((c) => c.kind === 'exec' && c.file !== ORCA && ['install', 'planner'].includes(c.args[0])), 'mte never runs on this machine')
+  const inst = pairedStubs()
+  assert.equal((await installHere(inst.deps)).ok, true)
+  assert.equal(orcaArgs(inst.calls, 'terminal', 'create').length, 2)
+})
+
+test('remote setup keeps an mte that is already new enough (a dev npm link stays): no npm install then', async () => {
+  const { deps, calls } = remoteStubs({ probeTail: ['mte --version', '99.0.0', 'MTE_SETUP_OK'] })
+  const res = await startRun(deps, { goal: 'x', newWorkspace: true, repoKey: 'env-1|ps-win' })
+  assert.equal(res.ok, true, JSON.stringify(res))
+  const terms = orcaArgs(calls, 'terminal', 'create')
+  assert.equal(terms[0][terms[0].indexOf('--command') + 1], 'mte --version && echo MTE_SETUP_"OK" || echo MTE_SETUP_"FAILED"')
+  assert.match(terms[1][terms[1].indexOf('--command') + 1], /^mte install && mte install --user/)
 })

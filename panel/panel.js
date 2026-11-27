@@ -384,7 +384,7 @@ function render() {
 
   $('active').textContent = `${s?.activeWorkers ?? 0} active`
   const version = s ? mteRow(s.mte) : null
-  $('ws').textContent = (s?.workspace ? `Workspace: ${s.workspace.name} · ${s.workspace.path}` : 'No workspace focused.') + (version ? ` · ${version}` : '')
+  $('ws').textContent = (s?.workspace ? `Workspace: ${s.workspace.name} · ${s.workspace.path}${s.workspace.host ? ` (on ${s.workspace.host})` : ''}` : 'No workspace focused.') + (version ? ` · ${version}` : '')
   // new-workspace repo picker: keep the person's pick across reloads; default to the focused workspace's repo
   const repos = s?.repos ?? []
   if (!repos.some((r) => r.key === st.repoKey)) st.repoKey = repos.some((r) => r.key === s?.focusedRepoKey) ? s.focusedRepoKey : ''
