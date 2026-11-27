@@ -137,7 +137,7 @@ export default async function activate(orca) {
       mte,
       workspace,
       repos,
-      focusedRepoId: repoOfWorkspace(repos, workspace)?.id ?? null,
+      focusedRepoKey: repoOfWorkspace(repos, workspace)?.key ?? null,
       claim,
       claimError,
       setup,

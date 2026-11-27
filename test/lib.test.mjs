@@ -25,6 +25,8 @@ import {
   updateShadowingMte,
   repoOfWorkspace,
   withGoalLinks,
+  listRepos,
+  remoteSetupLine,
   readClaim,
   resolveChoices,
   setupNote,
@@ -1086,9 +1088,9 @@ test('new workspace needs a repo, not a focused workspace: the picked repo is us
 })
 
 test('the repo picker defaults to the focused workspace repo', () => {
-  const repos = [{ id: 'r-1', path: '/code/a' }, { id: 'r-2', path: '/code/b' }]
-  assert.equal(repoOfWorkspace(repos, { id: 'r-2::/wt/x', path: '/wt/x' })?.id, 'r-2')
-  assert.equal(repoOfWorkspace(repos, { id: 'wt-9', path: '/code/a/sub' })?.id, 'r-1')
+  const repos = [{ key: 'local|r-1', repoId: 'r-1', hostId: 'local', path: '/code/a' }, { key: 'local|r-2', repoId: 'r-2', hostId: 'local', path: '/code/b' }, { key: 'env-1|s-9', env: 'env-1', repoId: 'r-2', hostId: 'local', path: '/code/b' }]
+  assert.equal(repoOfWorkspace(repos, { id: 'r-2::/wt/x', path: '/wt/x' })?.key, 'local|r-2')
+  assert.equal(repoOfWorkspace(repos, { id: 'wt-9', path: '/code/a/sub' })?.key, 'local|r-1')
   assert.equal(repoOfWorkspace(repos, null), null)
 })
 
@@ -1104,4 +1106,76 @@ test('a ticket URL in the goal is linked too; orca\'s JSON error reason reaches 
   const argv = orcaArgs(calls, 'worktree', 'create')[0]
   assert.deepEqual(argv.slice(2, 4), ['--name', 'eng-1091'])
   assert.ok(argv.includes('--linear-issue'), argv.join(' '))
+})
+
+// ---- remote hosts: SSH targets and paired Orca servers ----
+
+const SETUPS_LOCAL = { setups: [
+  { id: 'r-1', repoId: 'r-1', hostId: 'local', path: '/code/app', displayName: 'app', kind: 'git', setupState: 'ready' },
+  { id: 'ps-ssh', repoId: 'r-5', hostId: 'ssh:box', path: '/home/u/api', displayName: 'api', kind: 'git', setupState: 'ready' },
+  { id: 'ps-folder', hostId: 'local', path: '/notes', kind: 'folder', setupState: 'ready' }
+] }
+const SETUPS_PAIRED = { setups: [{ id: 'ps-win', repoId: 'r-9', hostId: 'local', path: 'C:\\code\\fotoclass', displayName: 'fotoclass', kind: 'git', setupState: 'ready' }] }
+
+function remoteStubs({ terminalTail = ['MTE_SETUP_OK'] } = {}) {
+  const { deps, calls } = newWsStubs({ ws: null })
+  const base = deps.exec
+  deps.exec = async (file, args, opts) => {
+    const ok = (result) => ({ code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: '' })
+    if (file === ORCA && args[0] === 'project' && args[1] === 'setups') {
+      calls.push({ kind: 'exec', file, args })
+      return ok(args.includes('--environment') ? SETUPS_PAIRED : SETUPS_LOCAL)
+    }
+    if (file === ORCA && args[0] === 'environment') return ok({ environments: [{ id: 'env-1', name: 'win-pc' }] })
+    if (file === ORCA && args[0] === 'host') return ok({ hosts: [{ id: 'local', name: 'this machine' }, { id: 'ssh:box', name: 'box' }] })
+    if (file === ORCA && args[0] === 'terminal' && args[1] === 'create') {
+      calls.push({ kind: 'exec', file, args })
+      return ok({ terminal: { handle: 'term_setup' } })
+    }
+    if (file === ORCA && args[0] === 'terminal' && args[1] === 'read') return ok({ terminal: { handle: 'term_setup', tail: terminalTail } })
+    if (file === ORCA && args[0] === 'terminal' && args[1] === 'close') {
+      calls.push({ kind: 'exec', file, args })
+      return ok({})
+    }
+    return base(file, args, opts)
+  }
+  deps.pollMs = 1
+  return { deps, calls }
+}
+
+test('the picker lists repos on this machine, its SSH targets and each paired Orca server; folders are left out', async () => {
+  const { deps } = remoteStubs()
+  const repos = await listRepos(deps)
+  assert.deepEqual(repos.map((r) => [r.key, r.name, r.host]), [
+    ['local|r-1', 'app', 'this machine'],
+    ['local|ps-ssh', 'api', 'box'],
+    ['env-1|ps-win', 'fotoclass', 'win-pc']
+  ])
+})
+
+test('a new workspace on a paired server is created there, mte is prepared in a terminal there, and the planner launches there', async () => {
+  const { deps, calls } = remoteStubs()
+  const res = await startRun(deps, { goal: 'https://linear.app/c/issue/ENG-1091', newWorkspace: true, repoKey: 'env-1|ps-win', workerAgent: 'claude', workerModel: 'opus', qaAgent: 'claude', qaModel: 'sonnet' })
+  assert.equal(res.ok, true, JSON.stringify(res))
+  const create = orcaArgs(calls, 'worktree', 'create')[0]
+  assert.deepEqual(create.slice(0, 6), ['worktree', 'create', '--name', 'eng-1091', '--project-host-setup', 'ps-win'])
+  assert.ok(create.join(' ').includes('--environment env-1'), create.join(' '))
+  const term = orcaArgs(calls, 'terminal', 'create')[0]
+  assert.ok(term.join(' ').includes('--environment env-1'))
+  const line = term[term.indexOf('--command') + 1]
+  assert.match(line, /^npm i -g https:\/\/github\.com\/MTEKode\/mte-flow-plugin\/releases\/download\/mte-v[\d.]+\/mtekode-mte-[\d.]+\.tgz && mte install && mte install --user && mte pin set --agent claude --model opus && mte pin set --agent claude --model sonnet --role qa && echo MTE_SETUP_"OK" \|\| echo MTE_SETUP_"FAILED"$/)
+  assert.equal(orcaArgs(calls, 'terminal', 'close').length, 1, 'a successful setup terminal is closed')
+  assert.ok(!calls.some((c) => c.kind === 'exec' && c.file !== ORCA && c.args[0] === 'install'), 'mte never runs locally for a remote workspace')
+  const launch = orcaArgs(calls, 'agent', 'launch')[0]
+  assert.ok(launch.join(' ').includes('--environment env-1'), launch.join(' '))
+})
+
+test('a failed remote setup keeps its terminal open and names the reason; unsafe pin ids never reach a remote shell', async () => {
+  const { deps, calls } = remoteStubs({ terminalTail: ['npm ERR! 404', 'MTE_SETUP_FAILED'] })
+  const res = await startRun(deps, { goal: 'x', newWorkspace: true, repoKey: 'local|ps-ssh' })
+  assert.equal(res.ok, false)
+  assert.equal(res.error.code, 'remote_setup_failed')
+  assert.match(res.error.message, /npm ERR! 404/)
+  assert.equal(orcaArgs(calls, 'terminal', 'close').length, 0)
+  assert.equal(remoteSetupLine({ workerAgent: 'claude', workerModel: 'm$(whoami)' }), null)
 })

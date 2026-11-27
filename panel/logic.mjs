@@ -177,8 +177,10 @@ const CREATE_LINK_FLAGS = { issue: '--issue', pr: '--pr', linear: '--linear-issu
  * resolves main checkouts, live-probed), base ref (omitted when empty: Orca then uses the repo default),
  * --no-parent, and one slot flag per link kind. Reference chips are returned as `deferred` urls instead.
  */
-export function createWorkspaceArgs({ name, repoId, base, links = [] }) {
-  const argv = ['worktree', 'create', '--name', String(name), '--repo', `id:${repoId}`, '--no-parent']
+export function createWorkspaceArgs({ name, repoId, setupId, base, links = [] }) {
+  // a project host setup names the repo on its host (local, SSH or a paired server); a bare repo id is the local fallback
+  const where = setupId ? ['--project-host-setup', String(setupId)] : ['--repo', `id:${repoId}`]
+  const argv = ['worktree', 'create', '--name', String(name), ...where, '--no-parent']
   if (String(base ?? '').trim()) {
     argv.push('--base-branch', String(base).trim())
   }

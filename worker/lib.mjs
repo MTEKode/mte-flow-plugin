@@ -11,7 +11,7 @@ import { createWorkspaceArgs, goalSlug, parseRef } from '../panel/logic.mjs'
 export const PROMPT_MAX = 4000
 export const TRUNCATION_MARKER = '\n[goal truncated]'
 /** The mte CLI version this plugin release is built for; the setup installs it when `mte` is missing or older. */
-export const REQUIRED_MTE_VERSION = '0.8.9'
+export const REQUIRED_MTE_VERSION = '0.8.10'
 export const MIN_NODE_MAJOR = 24
 export const tarballUrl = (version) =>
   `https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v${version}/mtekode-mte-${version}.tgz`
@@ -455,22 +455,56 @@ function launchRecord(goal, ws, settings) {
   }
 }
 
-/** Git repos registered in Orca, for the new-workspace repo picker; [] when Orca cannot list them. */
+const envArgs = (env) => (env ? ['--environment', env] : [])
+
+/**
+ * Git repos the new-workspace picker offers, on every host Orca reaches: this machine and its SSH targets (`project
+ * setups`), plus each paired Orca server (`project setups --environment <id>`). `key` (`<env|local>|<setup id>`) is
+ * what the panel sends back; a server that does not answer is skipped. Older Orca without project setups: `repo list`.
+ */
 export async function listRepos(deps) {
-  try {
-    const { repos = [] } = await orcaJson(deps, ['repo', 'list'])
-    return repos.filter((r) => (r.kind ?? 'git') === 'git').map((r) => ({ id: r.id, name: r.displayName || r.path.split(/[\\/]/).pop(), path: r.path }))
-  } catch {
-    return []
+  const soft = (p) => p.catch(() => null)
+  const [setups, environments, hosts] = await Promise.all([
+    soft(orcaJson(deps, ['project', 'setups'])),
+    soft(orcaJson(deps, ['environment', 'list'])),
+    soft(orcaJson(deps, ['host', 'list']))
+  ])
+  const hostName = (id) => (id === 'local' ? 'this machine' : (hosts?.hosts ?? []).find((h) => h.id === id)?.name ?? id)
+  const rows = (list, env, envName) =>
+    (list ?? [])
+      .filter((r) => (r.kind ?? 'git') === 'git' && (r.setupState ?? 'ready') === 'ready')
+      .map((r) => ({
+        key: `${env ?? 'local'}|${r.id}`,
+        env: env ?? null,
+        setupId: r.id,
+        repoId: r.repoId ?? null,
+        hostId: r.hostId ?? 'local',
+        name: r.displayName || String(r.path ?? '').split(/[\\/]/).pop(),
+        host: env ? (r.hostId && r.hostId !== 'local' ? `${envName} › ${r.hostId}` : envName) : hostName(r.hostId ?? 'local'),
+        path: r.path ?? ''
+      }))
+  if (!setups) {
+    const legacy = await soft(orcaJson(deps, ['repo', 'list']))
+    return (legacy?.repos ?? [])
+      .filter((r) => (r.kind ?? 'git') === 'git')
+      .map((r) => ({ key: `local|${r.id}`, env: null, setupId: null, repoId: r.id, hostId: 'local', name: r.displayName || r.path.split(/[\\/]/).pop(), host: 'this machine', path: r.path }))
   }
+  const remote = await Promise.all(
+    (environments?.environments ?? []).map(async (e) => rows((await soft(orcaJson(deps, ['project', 'setups', '--environment', e.id])))?.setups, e.id, e.name || e.id))
+  )
+  return [...rows(setups.setups, null), ...remote.flat()]
 }
 
-/** The repo a focused workspace belongs to (Orca ids are `<repoId>::<path>`; the path prefix is the fallback), or null. */
+/** True when work for this picker entry runs on this machine (so `mte` can be run here directly). */
+export const isLocalRepo = (repo) => !repo.env && (repo.hostId ?? 'local') === 'local'
+
+/** The picker entry a focused (local) workspace belongs to: Orca ids are `<repoId>::<path>`; the path prefix is the fallback. */
 export function repoOfWorkspace(repos, ws) {
   if (!ws) {
     return null
   }
-  return repos.find((r) => String(ws.id ?? '').startsWith(`${r.id}::`)) ?? repos.find((r) => ws.path === r.path || String(ws.path ?? '').startsWith(`${r.path}/`)) ?? null
+  const local = repos.filter(isLocalRepo)
+  return local.find((r) => r.repoId && String(ws.id ?? '').startsWith(`${r.repoId}::`)) ?? local.find((r) => ws.path === r.path || String(ws.path ?? '').startsWith(`${r.path}/`)) ?? null
 }
 
 /** `worktree show`'s row for the focused workspace: the repo id (`worktree create --repo` needs it; path: only resolves main checkouts, live-probed). */
@@ -488,12 +522,16 @@ export async function workspaceRow(deps, ws) {
  */
 async function startRunInNewWorkspace(deps, settings, ws, input, links) {
   const name = String(input.workspaceName ?? '').trim() || goalSlug(String(input.goal ?? ''))
-  let repoId = String(input.repoId ?? '').trim()
-  if (repoId) {
-    // trust boundary: only a repo Orca knows
-    if (!(await listRepos(deps)).some((r) => r.id === repoId)) {
+  const key = String(input.repoKey ?? (input.repoId ? `local|${input.repoId}` : '')).trim()
+  let repoId = null
+  let repo = null
+  if (key) {
+    // trust boundary: only a repo Orca lists, on a host it reaches
+    repo = (await listRepos(deps)).find((r) => r.key === key || (r.repoId && `local|${r.repoId}` === key && isLocalRepo(r))) ?? null
+    if (!repo) {
       return fail('input', 'bad_repo', 'Pick the repo for the new workspace from the list.')
     }
+    repoId = repo.repoId
   } else {
     if (!ws) {
       return fail('input', 'no_repo', 'Pick the repo for the new workspace.')
@@ -513,10 +551,11 @@ async function startRunInNewWorkspace(deps, settings, ws, input, links) {
     }
     repoId = row.repoId
   }
-  const { argv, deferred } = createWorkspaceArgs({ name, repoId, base: input.baseBranch, links })
+  const env = repo?.env ?? null
+  const { argv, deferred } = createWorkspaceArgs({ name, repoId, setupId: repo?.setupId, base: input.baseBranch, links })
   let created
   try {
-    created = (await orcaJson(deps, argv))?.worktree
+    created = (await orcaJson(deps, [...argv, ...envArgs(env)]))?.worktree
   } catch (error) {
     return fail('create', 'create_failed', String(error?.message ?? error))
   }
@@ -524,23 +563,35 @@ async function startRunInNewWorkspace(deps, settings, ws, input, links) {
     return fail('create', 'create_failed', 'The orca CLI did not report the created worktree.')
   }
   // raw id (never an `id:` prefix — 0.8.1): it is what worktree/agent selectors take
-  const target = { id: created.id, name: created.displayName ?? name, path: created.path, selector: created.id }
+  const target = { id: created.id, name: created.displayName ?? name, path: created.path, selector: created.id, env }
   const createdNote = (message) => `New workspace “${target.name}” was created and stays; ${message}`
   const linkFailures = []
   for (const url of deferred) {
     try {
-      await orcaJson(deps, ['reference', 'add', url, ...worktreeTarget(target)])
+      await orcaJson(deps, ['reference', 'add', url, ...worktreeTarget(target), ...envArgs(env)])
     } catch (error) {
       linkFailures.push(`${url} (${String(error?.message ?? error)})`)
     }
   }
-  const installErr = await runMte(deps, settings, 'install', installArgs(), target.path)
-  if (installErr) {
-    return fail('install', installErr.error.code, createdNote(installErr.error.message))
-  }
-  const { err: pinErr, pinned } = await applyPins(deps, settings, target.path)
-  if (pinErr) {
-    return fail('pin', pinErr.error.code, createdNote(pinErr.error.message))
+  let pinned = false
+  if (!repo || isLocalRepo(repo)) {
+    const installErr = await runMte(deps, settings, 'install', installArgs(), target.path)
+    if (installErr) {
+      return fail('install', installErr.error.code, createdNote(installErr.error.message))
+    }
+    const pins = await applyPins(deps, settings, target.path)
+    if (pins.err) {
+      return fail('pin', pins.err.error.code, createdNote(pins.err.error.message))
+    }
+    pinned = pins.pinned
+  } else {
+    // another machine: this plugin cannot run mte there, so an Orca terminal in the new workspace does it
+    deps.progress?.(`Preparing mte on ${repo.host}…`)
+    const setupErr = await remoteSetup(deps, target, settings)
+    if (setupErr) {
+      return fail('setup', setupErr.code, createdNote(setupErr.message))
+    }
+    pinned = Boolean(pinArgs(settings, 'coder') || pinArgs(settings, 'qa'))
   }
   const prompt = buildBootstrapPrompt(input.goal, setupNote(settings))
   try {
@@ -561,8 +612,64 @@ export function launchArgs(ws, settings, prompt) {
       args.push('--effort', settings.plannerEffort)
     }
   }
-  args.push('--prompt', prompt)
+  args.push('--prompt', prompt, ...envArgs(ws.env))
   return args
+}
+
+const SETUP_OK = 'MTE_SETUP_OK'
+const SETUP_FAILED = 'MTE_SETUP_FAILED'
+
+/** One shell line that installs the required mte, wires the repo and the user skill, and applies the pins; the markers are quoted in the line so only their output matches. */
+export function remoteSetupLine(settings) {
+  const steps = [
+    ['npm', 'i', '-g', tarballUrl(REQUIRED_MTE_VERSION)],
+    ['mte', 'install'],
+    ['mte', 'install', '--user'],
+    ...['coder', 'qa'].map((role) => pinArgs(settings, role)).filter(Boolean).map((a) => ['mte', ...a])
+  ]
+  // trust boundary: agent, model and effort come from the panel and go through a remote shell, so only plain words pass
+  const unsafe = steps.flat().find((a) => !/^[A-Za-z0-9_./:=@%+,-]+$/.test(String(a)))
+  if (unsafe !== undefined) {
+    return null
+  }
+  return `${steps.map((a) => a.join(' ')).join(' && ')} && echo MTE_SETUP_"OK" || echo MTE_SETUP_"FAILED"`
+}
+
+/**
+ * Runs remoteSetupLine in an Orca terminal opened in `target` (on its own host: SSH or a paired server) and waits for
+ * its marker. Closes the terminal on success; leaves it open on failure so the person can read why. null when ok.
+ */
+async function remoteSetup(deps, target, settings, { timeoutMs = 300_000, pollMs = deps.pollMs ?? 3_000 } = {}) {
+  const line = remoteSetupLine(settings)
+  if (!line) {
+    return { code: 'bad_pin', message: 'A worker agent, model or effort has characters that cannot be passed to a remote shell; pick plain ids.' }
+  }
+  let handle
+  try {
+    const created = await orcaJson(deps, ['terminal', 'create', '--worktree', String(target.id), '--title', 'MTE setup', '--command', line, ...envArgs(target.env)])
+    handle = created?.terminal?.handle
+  } catch (error) {
+    return { code: 'remote_setup_failed', message: `Could not open a terminal to prepare mte there: ${String(error?.message ?? error)}` }
+  }
+  if (!handle) {
+    return { code: 'remote_setup_failed', message: 'Orca did not report the setup terminal.' }
+  }
+  const deadline = Date.now() + timeoutMs
+  let tail = []
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, pollMs))
+    const read = await orcaJson(deps, ['terminal', 'read', '--terminal', handle, '--limit', '60', ...envArgs(target.env)]).catch(() => null)
+    tail = (read?.terminal?.tail ?? []).map((l) => String(l).trim())
+    if (tail.includes(SETUP_OK)) {
+      await orcaJson(deps, ['terminal', 'close', '--terminal', handle, ...envArgs(target.env)]).catch(() => null)
+      return null
+    }
+    if (tail.includes(SETUP_FAILED)) {
+      const why = tail.filter((l) => l && l !== SETUP_FAILED).slice(-4).join(' | ')
+      return { code: 'remote_setup_failed', message: `Preparing mte there failed (its terminal “MTE setup” stays open): ${why.slice(0, 400)}` }
+    }
+  }
+  return { code: 'remote_setup_timeout', message: 'Preparing mte there did not finish in 5 minutes; its terminal “MTE setup” stays open.' }
 }
 
 /**
@@ -660,7 +767,7 @@ export const isActiveWorker = (w) => w.outcome === 'in_progress' && !GONE.includ
 export async function listOrchestration(deps) {
   try {
     const [workers, runs] = await Promise.all([
-      orcaJson(deps, ['orchestration', 'worker-list', '--terminal-state', 'active', '--limit', '100', '--full']),
+      orcaJson(deps, ['orchestration', 'worker-list', '--terminal-state', 'active', '--limit', '100', '--full', '--include-remote']),
       orcaJson(deps, ['orchestration', 'run-list'])
     ])
     return {
