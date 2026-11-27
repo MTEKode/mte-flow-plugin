@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
-import { claimCallout, createSearcher, createWorkspaceArgs, filterRows, fitSelection, goalSlug, groupRows, iconFor, addLink, listHints, listKey, modelRows, moveIndex, mteDriftHint, mteRow, originIcon, parseRef, startNote, phaseText, attentionRow, filterRepos, groupRepos, osOf } from '../panel/logic.mjs'
+import { claimCallout, createSearcher, createWorkspaceArgs, filterRows, fitSelection, goalSlug, groupRows, iconFor, addLink, listHints, listKey, modelRows, moveIndex, mteDriftHint, mteRow, originIcon, parseRef, startNote, phaseText, attentionRow, filterRepos, groupRepos, osOf, linkSource } from '../panel/logic.mjs'
 
 test('model rows: default first, labels when the CLI gives them, an unlisted current model stays', () => {
   const info = { models: [{ id: 'gemini-x-high', label: 'Gemini X (High)' }, { id: 'p/m' }] }
@@ -286,4 +286,17 @@ test('repo picker: search by name, host or path; grouped by host; OS from platfo
   assert.deepEqual(filterRepos(repos, '').map((r) => r.key), ['a', 'b', 'c'])
   assert.deepEqual(groupRepos(repos).map((g) => [g.host, g.platform, g.server, g.repos.length]), [['this machine', 'darwin', false, 1], ['box', 'linux', true, 1], ['win-pc', 'win32', true, 1]])
   assert.deepEqual(['darwin', 'win32', 'linux', null, 'aix'].map(osOf), ['mac', 'windows', 'linux', null, null])
+})
+
+test('link search: the spinner starts on the first keystroke; every link knows its origin', () => {
+  const searching = []
+  const fake = { setTimeout: () => 1, clearTimeout: () => {} }
+  const s = createSearcher({ timers: fake, request: async () => ({ items: [] }), onResult: () => {}, onSearching: (q) => searching.push(q) })
+  s.input('e')
+  s.input('eng')
+  assert.deepEqual(searching, ['eng'], 'below the minimum length nothing searches')
+  assert.deepEqual(
+    [{ kind: 'linear', url: 'https://linear.app/x/issue/ENG-1' }, { kind: 'pr', value: '12' }, { kind: 'issue', value: '4' }, { kind: 'reference', ref: 'https://gitlab.com/a/b/-/merge_requests/3' }, { kind: 'reference', ref: 'https://acme.atlassian.net/browse/OPS-1' }, { kind: 'reference', ref: 'https://example.com' }].map(linkSource),
+    ['linear', 'github', 'github', 'gitlab', 'jira', 'web']
+  )
 })

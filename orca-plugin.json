@@ -3,7 +3,7 @@
   "execution": "trusted-worker",
   "id": "mte-flow",
   "name": "MTE Flow",
-  "version": "0.8.11",
+  "version": "0.8.12",
   "description": "Start and watch MTE Flow runs on stock Orca: install MTE in a workspace, pin the worker agent, launch the planner and follow runs and workers.",
   "engines": {
     "orca": ">=1.4.248"

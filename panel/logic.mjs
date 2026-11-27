@@ -244,7 +244,7 @@ export function listHints({ harnessError, models }) {
  * Debounced, stale-safe search. `input(q)` schedules a request after `delay` ms; any older request that resolves
  * after a newer one was issued is dropped. Timers are injectable for tests.
  */
-export function createSearcher({ request, onResult, delay = 300, minLength = 2, timers = { setTimeout: (...a) => setTimeout(...a), clearTimeout: (t) => clearTimeout(t) } }) {
+export function createSearcher({ request, onResult, onSearching = () => {}, delay = 300, minLength = 2, timers = { setTimeout: (...a) => setTimeout(...a), clearTimeout: (t) => clearTimeout(t) } }) {
   let timer = null
   let seq = 0
   return {
@@ -256,6 +256,7 @@ export function createSearcher({ request, onResult, delay = 300, minLength = 2, 
         onResult(null)
         return
       }
+      onSearching(text) // from the first keystroke: the debounce is waiting too
       timer = timers.setTimeout(async () => {
         let res
         try {
@@ -317,4 +318,20 @@ export function groupRepos(repos) {
 /** `darwin` → mac, `win32` → windows, `linux` → linux; anything else → null (no OS icon). */
 export function osOf(platform) {
   return { darwin: 'mac', win32: 'windows', linux: 'linux' }[platform] ?? null
+}
+
+/** Where a link comes from, for its icon: linear, github, gitlab, jira, or web. */
+export function linkSource(item) {
+  if (item?.kind === 'linear') return 'linear'
+  const url = String(item?.url ?? item?.ref ?? item?.value ?? '')
+  let host = ''
+  try {
+    host = new URL(url).hostname.toLowerCase()
+  } catch {
+    // a bare key or number
+  }
+  if (item?.kind === 'pr' || item?.kind === 'issue' || host === 'github.com') return 'github'
+  if (host.includes('gitlab')) return 'gitlab'
+  if (host.endsWith('atlassian.net') || host.includes('jira')) return 'jira'
+  return 'web'
 }
