@@ -11,7 +11,7 @@ import { createWorkspaceArgs, goalSlug, parseRef } from '../panel/logic.mjs'
 export const PROMPT_MAX = 4000
 export const TRUNCATION_MARKER = '\n[goal truncated]'
 /** The mte CLI version this plugin release is built for; the setup installs it when `mte` is missing or older. */
-export const REQUIRED_MTE_VERSION = '0.8.14'
+export const REQUIRED_MTE_VERSION = '0.8.15'
 export const MIN_NODE_MAJOR = 24
 export const tarballUrl = (version) =>
   `https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v${version}/mtekode-mte-${version}.tgz`
@@ -192,7 +192,33 @@ export async function resolveWorkspace(host) {
   const row =
     workspaces.find((w) => ctx.workspaceId && w.id === ctx.workspaceId) ??
     workspaces.find((w) => w.branch === ctx.branch && w.name === ctx.displayName)
-  return row ? { id: row.id, name: row.name, path: row.path, branch: row.branch } : null
+  if (row) {
+    return { id: row.id, name: row.name, path: row.path, branch: row.branch }
+  }
+  // not on this machine: a workspace of a paired Orca server (shown in this sidebar) is found on that server
+  return host.findRemote ? host.findRemote(ctx) : null
+}
+
+const stripRef = (b) => String(b ?? '').replace(/^refs\/heads\//, '')
+
+/**
+ * The focused workspace when it lives on a paired Orca server: each server's `worktree list` is searched for the same
+ * instance id (the last segment of Orca's `identity:wt2:<host>:<instance>` ids), then for the same name and branch.
+ * `env` marks it remote: mte runs there through an Orca terminal, never on this machine. null when no server has it.
+ */
+export async function findRemoteWorkspace(deps, ctx) {
+  const instance = String(ctx?.workspaceId ?? '').split(':').pop()
+  const envs = (await orcaJson(deps, ['environment', 'list']).catch(() => null))?.environments ?? []
+  for (const e of envs) {
+    const rows = (await orcaJson(deps, ['worktree', 'list', '--environment', e.id]).catch(() => null))?.worktrees ?? []
+    const hit =
+      rows.find((w) => instance && (w.instanceId === instance || w.identity?.instanceId === instance)) ??
+      rows.find((w) => (w.displayName ?? w.name) === ctx.displayName && stripRef(w.branch) === stripRef(ctx.branch))
+    if (hit) {
+      return { id: hit.id, name: hit.displayName ?? ctx.displayName, path: hit.path, branch: stripRef(hit.branch), env: e.id, host: e.name || e.id, selector: hit.id }
+    }
+  }
+  return null
 }
 
 const fail = (stage, code, message) => ({ ok: false, error: { stage, code, message } })
@@ -316,6 +342,12 @@ export async function installInWorkspace(deps) {
   if (!ws) {
     return fail('workspace', 'no_workspace', 'No workspace is focused.')
   }
+  if (ws.env) {
+    // a paired server's workspace: install there, in an Orca terminal of that workspace
+    deps.progress?.(`Installing mte on ${ws.host}…`)
+    const err = await remoteSetup(deps, ws, settings)
+    return err ? fail('setup', err.code, err.message) : { ok: true, workspace: ws }
+  }
   const refused = checkWorkspaceTarget(deps, ws)
   if (refused) {
     return refused
@@ -409,6 +441,9 @@ export async function startRun(deps, input = {}) {
   if (!ws) {
     return fail('workspace', 'no_workspace', 'No workspace is focused.')
   }
+  if (ws.env) {
+    return startRunOnRemote(deps, settings, ws, input, links)
+  }
   const refused = checkWorkspaceTarget(deps, ws)
   if (refused) {
     return refused
@@ -452,6 +487,28 @@ export async function startRun(deps, input = {}) {
     // Orca does not record who coordinates a run or which model a worker runs: remember it for the panel
     await recordLaunch(deps, launched.sessionId ?? launched.terminalId, launchRecord(goal, ws, settings))
     return { ok: true, workspace: ws, ...launched, pinned, truncated: prompt.includes(TRUNCATION_MARKER), replacedStale: Boolean(stale), linkFailures }
+  } catch (error) {
+    return fail('launch', String(error?.code ?? 'action_failed'), String(error?.message ?? error))
+  }
+}
+
+/**
+ * Start run in a focused workspace of a paired Orca server: mte cannot run here, so the setup line (install, user
+ * skill, pins) runs in an Orca terminal of that workspace, then the planner launches there. The planner claim check
+ * stays with the planner itself (its skill claims first and stops on a live claim), since `mte planner show` cannot run here.
+ */
+async function startRunOnRemote(deps, settings, ws, input, links) {
+  deps.progress?.(`Preparing mte on ${ws.host}…`)
+  const setupErr = await remoteSetup(deps, ws, settings)
+  if (setupErr) {
+    return fail('setup', setupErr.code, setupErr.message)
+  }
+  const linkFailures = await attachLinks(deps, ws, links)
+  const prompt = buildBootstrapPrompt(input.goal, setupNote(settings))
+  try {
+    const launched = await launchPlanner(deps, ws, settings, prompt)
+    await recordLaunch(deps, launched.sessionId ?? launched.terminalId, launchRecord(input.goal, ws, settings))
+    return { ok: true, workspace: ws, ...launched, pinned: Boolean(pinArgs(settings, 'coder') || pinArgs(settings, 'qa')), truncated: prompt.includes(TRUNCATION_MARKER), linkFailures }
   } catch (error) {
     return fail('launch', String(error?.code ?? 'action_failed'), String(error?.message ?? error))
   }
@@ -682,9 +739,9 @@ const SETUP_OK = 'MTE_SETUP_OK'
 const SETUP_FAILED = 'MTE_SETUP_FAILED'
 
 /** One shell line that installs the required mte, wires the repo and the user skill, and applies the pins; the markers are quoted in the line so only their output matches. */
-export function remoteSetupLine(settings) {
+export function remoteSetupLine(settings, { npm = true } = {}) {
   const steps = [
-    ['npm', 'i', '-g', tarballUrl(REQUIRED_MTE_VERSION)],
+    ...(npm ? [['npm', 'i', '-g', tarballUrl(REQUIRED_MTE_VERSION)]] : []),
     ['mte', 'install'],
     ['mte', 'install', '--user'],
     ...['coder', 'qa'].map((role) => pinArgs(settings, role)).filter(Boolean).map((a) => ['mte', ...a])
@@ -701,20 +758,17 @@ export function remoteSetupLine(settings) {
  * Runs remoteSetupLine in an Orca terminal opened in `target` (on its own host: SSH or a paired server) and waits for
  * its marker. Closes the terminal on success; leaves it open on failure so the person can read why. null when ok.
  */
-async function remoteSetup(deps, target, settings, { timeoutMs = 300_000, pollMs = deps.pollMs ?? 3_000 } = {}) {
-  const line = remoteSetupLine(settings)
-  if (!line) {
-    return { code: 'bad_pin', message: 'A worker agent, model or effort has characters that cannot be passed to a remote shell; pick plain ids.' }
-  }
+/** Runs one shell line in an Orca terminal of `target` and waits for its marker: `{ tail }` when it printed OK, `{ error, tail }` otherwise. Closes the terminal only on OK. */
+async function runInTerminal(deps, target, line, { timeoutMs, pollMs }) {
   let handle
   try {
     const created = await orcaJson(deps, ['terminal', 'create', '--worktree', String(target.id), '--title', 'MTE setup', '--command', line, ...envArgs(target.env)])
     handle = created?.terminal?.handle
   } catch (error) {
-    return { code: 'remote_setup_failed', message: `Could not open a terminal to prepare mte there: ${String(error?.message ?? error)}` }
+    return { error: { code: 'remote_setup_failed', message: `Could not open a terminal to prepare mte there: ${String(error?.message ?? error)}` } }
   }
   if (!handle) {
-    return { code: 'remote_setup_failed', message: 'Orca did not report the setup terminal.' }
+    return { error: { code: 'remote_setup_failed', message: 'Orca did not report the setup terminal.' } }
   }
   const deadline = Date.now() + timeoutMs
   let tail = []
@@ -724,14 +778,33 @@ async function remoteSetup(deps, target, settings, { timeoutMs = 300_000, pollMs
     tail = (read?.terminal?.tail ?? []).map((l) => String(l).trim())
     if (tail.includes(SETUP_OK)) {
       await orcaJson(deps, ['terminal', 'close', '--terminal', handle, ...envArgs(target.env)]).catch(() => null)
-      return null
+      return { tail }
     }
     if (tail.includes(SETUP_FAILED)) {
       const why = tail.filter((l) => l && l !== SETUP_FAILED).slice(-4).join(' | ')
-      return { code: 'remote_setup_failed', message: `Preparing mte there failed (its terminal “MTE setup” stays open): ${why.slice(0, 400)}` }
+      return { tail, error: { code: 'remote_setup_failed', message: `Preparing mte there failed (its terminal “MTE setup” stays open): ${why.slice(0, 400)}` } }
     }
   }
-  return { code: 'remote_setup_timeout', message: 'Preparing mte there did not finish in 5 minutes; its terminal “MTE setup” stays open.' }
+  return { tail, error: { code: 'remote_setup_timeout', message: 'Preparing mte there did not finish in 5 minutes; its terminal “MTE setup” stays open.' } }
+}
+
+/**
+ * Prepares mte in `target` (a workspace on another machine): first asks that machine's `mte --version`, and installs
+ * the release with npm only when it is missing or older (a dev `npm link` there stays as it is); then wires the repo,
+ * the user skill and the pins. null when ok.
+ */
+async function remoteSetup(deps, target, settings, { timeoutMs = 300_000, pollMs = deps.pollMs ?? 3_000 } = {}) {
+  if (!remoteSetupLine(settings)) {
+    return { code: 'bad_pin', message: 'A worker agent, model or effort has characters that cannot be passed to a remote shell; pick plain ids.' }
+  }
+  const probe = await runInTerminal(deps, target, `mte --version && echo MTE_SETUP_"OK" || echo MTE_SETUP_"FAILED"`, { timeoutMs: 60_000, pollMs })
+  const version = (probe.tail ?? []).find((l) => /^\d+\.\d+\.\d+$/.test(l))
+  const npm = probe.error ? true : !version || compareVersions(version, REQUIRED_MTE_VERSION) < 0
+  if (probe.error && probe.error.code !== 'remote_setup_failed') {
+    return probe.error // no terminal at all: the setup line would not fare better
+  }
+  const run = await runInTerminal(deps, target, remoteSetupLine(settings, { npm }), { timeoutMs, pollMs })
+  return run.error ?? null
 }
 
 /**
@@ -1437,6 +1510,6 @@ const worktreeTarget = (ws) => ['--worktree', String(ws.id)]
 /** argv that links a parsed ref: GitHub/Linear go through their `worktree set` slot, any other URL through `orca reference add`. */
 export function linkAddArgs(ws, ref) {
   const flag = LINK_FLAGS[ref.kind]
-  return flag ? ['worktree', 'set', ...worktreeTarget(ws), flag, ref.value] : ['reference', 'add', ref.value, ...worktreeTarget(ws)]
+  return [...(flag ? ['worktree', 'set', ...worktreeTarget(ws), flag, ref.value] : ['reference', 'add', ref.value, ...worktreeTarget(ws)]), ...envArgs(ws.env)]
 }
 

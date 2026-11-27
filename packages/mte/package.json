@@ -1,6 +1,6 @@
 {
   "name": "@mtekode/mte",
-  "version": "0.8.14",
+  "version": "0.8.15",
   "description": "MTE Flow engine: memory MCP server, check runner and deploy-check.",
   "type": "module",
   "license": "MIT",
