@@ -1111,7 +1111,7 @@ test('a ticket URL in the goal is linked too; orca\'s JSON error reason reaches 
 // ---- remote hosts: SSH targets and paired Orca servers ----
 
 const SETUPS_LOCAL = { setups: [
-  { id: 'r-1', repoId: 'r-1', hostId: 'local', path: '/code/app', displayName: 'app', kind: 'git', setupState: 'ready' },
+  { id: 'r-1', repoId: 'r-1', projectId: 'github:o/app', hostId: 'local', path: '/code/app', displayName: 'app', kind: 'git', setupState: 'ready' },
   { id: 'ps-ssh', repoId: 'r-5', hostId: 'ssh:box', path: '/home/u/api', displayName: 'api', kind: 'git', setupState: 'ready' },
   { id: 'ps-folder', hostId: 'local', path: '/notes', kind: 'folder', setupState: 'ready' }
 ] }
@@ -1127,7 +1127,9 @@ function remoteStubs({ terminalTail = ['MTE_SETUP_OK'] } = {}) {
       return ok(args.includes('--environment') ? SETUPS_PAIRED : SETUPS_LOCAL)
     }
     if (file === ORCA && args[0] === 'environment') return ok({ environments: [{ id: 'env-1', name: 'win-pc' }] })
-    if (file === ORCA && args[0] === 'host') return ok({ hosts: [{ id: 'local', name: 'this machine' }, { id: 'ssh:box', name: 'box' }] })
+    if (file === ORCA && args[0] === 'host' && args[1] === 'name') return ok({ machineName: 'WIN-PC', platform: 'win32' })
+    if (file === ORCA && args[0] === 'host') return ok({ hosts: [{ id: 'local', name: 'this machine', platform: 'darwin' }, { id: 'ssh:box', name: 'box', platform: 'linux' }] })
+    if (file === ORCA && args[0] === 'project' && args[1] === 'list') return ok({ projects: args.includes('--environment') ? [] : [{ id: 'github:o/app', badgeColor: '#ff0000', repoIcon: { type: 'image', src: 'https://github.com/o.png?size=64' } }] })
     if (file === ORCA && args[0] === 'terminal' && args[1] === 'create') {
       calls.push({ kind: 'exec', file, args })
       return ok({ terminal: { handle: 'term_setup' } })
@@ -1145,12 +1147,19 @@ function remoteStubs({ terminalTail = ['MTE_SETUP_OK'] } = {}) {
 
 test('the picker lists repos on this machine, its SSH targets and each paired Orca server; folders are left out', async () => {
   const { deps } = remoteStubs()
+  const fetched = []
+  deps.fetch = async (url) => (fetched.push(url), { ok: true, headers: new Map([['content-type', 'image/png']]), arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer })
   const repos = await listRepos(deps)
-  assert.deepEqual(repos.map((r) => [r.key, r.name, r.host]), [
-    ['local|r-1', 'app', 'this machine'],
-    ['local|ps-ssh', 'api', 'box'],
-    ['env-1|ps-win', 'fotoclass', 'win-pc']
+  assert.deepEqual(repos.map((r) => [r.key, r.name, r.host, r.platform, r.server]), [
+    ['local|r-1', 'app', 'this machine', 'darwin', false],
+    ['local|ps-ssh', 'api', 'box', 'linux', true],
+    ['env-1|ps-win', 'fotoclass', 'win-pc', 'win32', true]
   ])
+  assert.equal(repos[0].icon, 'data:image/png;base64,AQID', 'the project icon comes as a data URL')
+  assert.equal(repos[0].color, '#ff0000')
+  assert.equal(repos[1].icon, null)
+  await listRepos(deps)
+  assert.deepEqual(fetched, ['https://github.com/o.png?size=64'], 'icons are fetched once')
 })
 
 test('a new workspace on a paired server is created there, mte is prepared in a terminal there, and the planner launches there', async () => {

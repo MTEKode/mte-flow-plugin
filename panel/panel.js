@@ -1,5 +1,5 @@
 // MTE Flow panel (html, isolated frame): all data comes from the worker through orca.plugin.request.
-import { addLink, attentionRow, claimCallout, createSearcher, filterRows, fitSelection, groupRows, iconFor, KIND_LABEL, listHints, listKey, modelRows, mteDriftHint, mteRow, originIcon, originOf, parseRef, phaseText, startNote } from './logic.mjs'
+import { addLink, attentionRow, claimCallout, createSearcher, filterRepos, filterRows, fitSelection, groupRepos, groupRows, osOf, iconFor, KIND_LABEL, listHints, listKey, modelRows, mteDriftHint, mteRow, originIcon, originOf, parseRef, phaseText, startNote } from './logic.mjs'
 
 const $ = (id) => document.getElementById(id)
 const req = (name, params = {}) => orca.plugin.request(name, params, { timeoutMs: 120000 })
@@ -10,7 +10,7 @@ const el = (tag, props = {}, ...kids) => {
 }
 
 // links are the run's own: only what the person adds here, attached to the run's workspace at Start
-const st = { snap: null, harnesses: [], harnessError: null, models: {}, planner: null, worker: null, qa: null, links: [], busy: null, notice: null, claimedBy: null, prefilled: false }
+const st = { snap: null, harnesses: [], harnessError: null, models: {}, planner: null, worker: null, qa: null, links: [], busy: null, notice: null, claimedBy: null, prefilled: false, repoKey: '' }
 
 // ---- harness / model / effort selectors (harness, surface and effort are native selects; the model list is searchable) ----
 const opt = (value, ...kids) => el('option', { value }, ...kids)
@@ -80,6 +80,84 @@ function modelPicker(field, title, { rows, get, set }) {
   return { btn, label }
 }
 
+// ---- repo picker (new workspace): project icon like Orca's sidebar, grouped by host with OS and server icons, searchable ----
+const SVG = {
+  mac: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.6c0-2.6 2.1-3.8 2.2-3.9-1.2-1.8-3.1-2-3.7-2-1.6-.2-3.1.9-3.9.9-.8 0-2.1-.9-3.4-.9-1.7 0-3.3 1-4.2 2.6-1.8 3.1-.5 7.8 1.3 10.3.9 1.2 1.9 2.6 3.2 2.6 1.3-.1 1.8-.8 3.3-.8 1.6 0 2 .8 3.4.8 1.4 0 2.3-1.3 3.1-2.5 1-1.4 1.4-2.8 1.4-2.9-.1 0-2.7-1-2.7-4.2zM13.9 4.9c.7-.9 1.2-2 1.1-3.2-1 0-2.3.7-3 1.6-.7.8-1.2 2-1.1 3.1 1.2.1 2.3-.6 3-1.5z"/></svg>',
+  windows: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M2 4.3 10 3.2v8.1H2zM11 3.1 22 1.5v9.8H11zM2 12.6h8v8.2L2 19.7zM11 12.6h11v9.9l-11-1.5z"/></svg>',
+  linux: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2c-2.3 0-3.7 1.9-3.7 4.5 0 1.3.2 2.2-.6 3.6C6.5 12 5 14.4 5 16.9c0 1 .3 1.8.8 2.4l-1.2 1.8c-.3.5.1 1 .6 1h4.1c.5 0 .9-.3 1.1-.7.5.1 1 .2 1.6.2s1.1-.1 1.6-.2c.2.4.6.7 1.1.7h4.1c.5 0 .9-.5.6-1l-1.2-1.8c.5-.6.8-1.4.8-2.4 0-2.5-1.5-4.9-2.7-6.8-.8-1.4-.6-2.3-.6-3.6C15.7 3.9 14.3 2 12 2zm-1.6 3.6c.5 0 .8.5.8 1.1s-.4 1.1-.8 1.1-.8-.5-.8-1.1.4-1.1.8-1.1zm3.2 0c.5 0 .8.5.8 1.1s-.4 1.1-.8 1.1-.8-.5-.8-1.1.4-1.1.8-1.1zM12 12c1.7 0 3 1.8 3 4s-1.3 4-3 4-3-1.8-3-4 1.3-4 3-4z"/></svg>',
+  server: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>'
+}
+const OS_LABEL = { mac: 'macOS', windows: 'Windows', linux: 'Linux' }
+const svgIcon = (name, title) => el('span', { className: 'os', title, innerHTML: SVG[name] })
+/** OS icon of a host plus a server icon when it is another machine. */
+const hostIcons = (h) => [...(osOf(h.platform) ? [svgIcon(osOf(h.platform), OS_LABEL[osOf(h.platform)])] : []), ...(h.server ? [svgIcon('server', 'Server')] : [])]
+/** The project's own icon (as Orca shows it), or its first letter on the project's badge color. */
+const repoIcon = (r) =>
+  r.icon
+    ? el('img', { className: 'repo-ico', src: r.icon, alt: '' })
+    : el('span', { className: 'repo-ico letter', textContent: (r.name || '?')[0].toUpperCase(), ariaHidden: 'true', style: `background:${/^#[0-9a-f]{3,8}$/i.test(r.color ?? '') ? r.color : 'var(--orca-muted-foreground)'}` })
+
+function repoPicker(field, { rows, get, set }) {
+  const btn = el('button', { type: 'button', className: 'picker', ariaLabel: 'Repo for the new workspace', ariaHasPopup: 'listbox' })
+  field.append(btn)
+  let pop = null
+  let active = 0
+  let shown = []
+  const label = () => {
+    const r = rows().find((x) => x.key === get())
+    btn.replaceChildren(
+      ...(r ? [repoIcon(r), el('span', { className: 't', textContent: r.name }), el('span', { className: 'sub', textContent: r.host }), el('span', { className: 'hostbadges' }, ...hostIcons(r))] : [el('span', { className: 't muted', textContent: rows().length ? 'Pick a repo…' : 'No repos in Orca' })]),
+      el('span', { className: 'caret', textContent: '▼', ariaHidden: 'true' })
+    )
+  }
+  const close = (focus) => { pop?.remove(); pop = null; if (focus) btn.focus() }
+  const choose = (key) => { set(key); label(); close(true) }
+  btn.onclick = () => {
+    if (pop) return close(true)
+    const pid = ++popSeq
+    const input = el('input', { placeholder: 'Search repos or hosts', ariaLabel: 'Search repos' })
+    const list = el('div', { role: 'listbox' })
+    pop = el('div', { className: 'pop' }, input, list)
+    const draw = () => {
+      const groups = groupRepos(filterRepos(rows(), input.value.trim()))
+      shown = groups.flatMap((g) => g.repos)
+      active = Math.max(0, Math.min(active, shown.length - 1))
+      let at = 0
+      list.replaceChildren(
+        ...groups.flatMap((g) => [
+          el('div', { className: 'group' }, ...hostIcons(g), el('span', { textContent: g.host })),
+          ...g.repos.map((r) => {
+            const i = at++
+            const row = el('div', { id: `ro-${pid}-${i}`, className: 'opt repo' + (i === active ? ' active' : ''), role: 'option', ariaSelected: String(r.key === get()) },
+              repoIcon(r), el('div', { className: 'main' }, el('span', { className: 't', textContent: r.name }), el('span', { className: 'sub', textContent: r.path, title: r.path })))
+            row.onmousedown = (e) => { e.preventDefault(); choose(r.key) }
+            return row
+          })
+        ]),
+        ...(shown.length ? [] : [el('div', { className: 'opt muted', textContent: 'No repos match.' })])
+      )
+      input.setAttribute('aria-activedescendant', shown.length ? `ro-${pid}-${active}` : '')
+      list.querySelector('.active')?.scrollIntoView({ block: 'nearest' })
+    }
+    input.oninput = () => { active = 0; draw() }
+    input.onkeydown = (e) => {
+      if (!['ArrowDown', 'ArrowUp', 'Enter', 'Escape', 'Home', 'End'].includes(e.key)) return
+      e.preventDefault()
+      const r = listKey(active, shown.length, e.key)
+      active = r.index
+      if (r.action === 'select' && shown[active]) choose(shown[active].key)
+      else if (r.action === 'close') close(true)
+      else draw()
+    }
+    input.onblur = () => setTimeout(() => close(false), 120)
+    field.append(pop)
+    active = Math.max(0, groupRepos(rows()).flatMap((g) => g.repos).findIndex((r) => r.key === get()))
+    draw()
+    input.focus()
+  }
+  return { label }
+}
+
 function chooser(field, key, title, withSurface) {
   const harness = el('select', { ariaLabel: `${title} harness` })
   const surface = el('select', { ariaLabel: `${title} surface`, className: 'fit' }, opt('chat', 'Chat'), opt('terminal', 'Terminal'))
@@ -110,6 +188,7 @@ function chooser(field, key, title, withSurface) {
   return { draw }
 }
 
+const repoPick = repoPicker($('ws-repo'), { rows: () => st.snap?.repos ?? [], get: () => st.repoKey, set: (k) => { st.repoKey = k } })
 const choosers = [chooser($('f-planner'), 'planner', 'Orchestrator', true), chooser($('f-worker'), 'worker', 'Coder', false), chooser($('f-qa'), 'qa', 'QA', false)]
 const drawChoosers = () => choosers.forEach((c) => c.draw())
 
@@ -193,7 +272,7 @@ async function act(name, run, success) {
   void load()
 }
 const startRun = (replace = false) =>
-  act('start', () => req('run.start', { goal: goal.value, plannerAgent: st.planner.agent, plannerModel: st.planner.model || '', plannerSurface: st.planner.surface, plannerEffort: st.planner.effort || '', workerAgent: st.worker.agent, workerModel: st.worker.model || '', workerEffort: st.worker.effort || '', qaAgent: st.qa.agent, qaModel: st.qa.model || '', qaEffort: st.qa.effort || '', links: st.links.map((l) => l.ref), replace, newWorkspace: $('new-ws').checked, repoKey: $('ws-repo').value, workspaceName: $('ws-name').value, baseBranch: $('ws-base').value }),
+  act('start', () => req('run.start', { goal: goal.value, plannerAgent: st.planner.agent, plannerModel: st.planner.model || '', plannerSurface: st.planner.surface, plannerEffort: st.planner.effort || '', workerAgent: st.worker.agent, workerModel: st.worker.model || '', workerEffort: st.worker.effort || '', qaAgent: st.qa.agent, qaModel: st.qa.model || '', qaEffort: st.qa.effort || '', links: st.links.map((l) => l.ref), replace, newWorkspace: $('new-ws').checked, repoKey: st.repoKey, workspaceName: $('ws-name').value, baseBranch: $('ws-base').value }),
     (r) => { st.links = []; return startNote(r) })
 $('start').onclick = () => startRun(false)
 // the name/base inputs only exist for a new-workspace start
@@ -264,11 +343,9 @@ function render() {
   const version = s ? mteRow(s.mte) : null
   $('ws').textContent = (s?.workspace ? `Workspace: ${s.workspace.name} · ${s.workspace.path}` : 'No workspace focused.') + (version ? ` · ${version}` : '')
   // new-workspace repo picker: keep the person's pick across reloads; default to the focused workspace's repo
-  const repoSel = $('ws-repo')
   const repos = s?.repos ?? []
-  const picked = repoSel.value || s?.focusedRepoKey || ''
-  repoSel.replaceChildren(el('option', { value: '', textContent: repos.length ? 'Repo…' : 'No repos in Orca' }), ...repos.map((r) => el('option', { value: r.key, textContent: `${r.name} · ${r.host}`, title: r.path })))
-  repoSel.value = repos.some((r) => r.key === picked) ? picked : ''
+  if (!repos.some((r) => r.key === st.repoKey)) st.repoKey = repos.some((r) => r.key === s?.focusedRepoKey) ? s.focusedRepoKey : ''
+  repoPick.label()
   const chips = st.links
   const chipBox = $('chips')
   chipBox.hidden = chips.length === 0
