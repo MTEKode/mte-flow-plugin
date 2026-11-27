@@ -138,8 +138,26 @@ export function startNote(r) {
 }
 
 /** Workspace name derived from the goal: lowercase words joined with '-', max 48 chars; `mte-run` when nothing is left. */
+/** A URL in a goal, reduced to what names the work: a Linear key and title, `pr-12` / `issue-12`; other URLs drop out. */
+function urlWords(url) {
+  let u
+  try {
+    u = new URL(url)
+  } catch {
+    return ''
+  }
+  const host = u.hostname.toLowerCase()
+  const parts = u.pathname.split('/').filter(Boolean)
+  if (host === 'linear.app' && parts[1] === 'issue') {
+    return parts.slice(2, 4).join(' ')
+  }
+  const gh = host === 'github.com' ? /^(pull|issues)$/.exec(parts[2] ?? '') : null
+  return gh && /^\d+$/.test(parts[3] ?? '') ? `${gh[1] === 'pull' ? 'pr' : 'issue'} ${parts[3]}` : ''
+}
+
 export function goalSlug(goal) {
   const slug = String(goal ?? '')
+    .replace(/https?:\/\/\S+/gi, (url) => ` ${urlWords(url)} `)
     .toLowerCase()
     .normalize('NFKD')
     .replace(/\p{M}/gu, '')

@@ -11,7 +11,7 @@ import { createWorkspaceArgs, goalSlug, parseRef } from '../panel/logic.mjs'
 export const PROMPT_MAX = 4000
 export const TRUNCATION_MARKER = '\n[goal truncated]'
 /** The mte CLI version this plugin release is built for; the setup installs it when `mte` is missing or older. */
-export const REQUIRED_MTE_VERSION = '0.8.6'
+export const REQUIRED_MTE_VERSION = '0.8.8'
 export const MIN_NODE_MAJOR = 24
 export const tarballUrl = (version) =>
   `https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v${version}/mtekode-mte-${version}.tgz`
@@ -266,6 +266,18 @@ async function applyPins(deps, settings, cwd) {
 const CHOICE_SETTINGS = ['plannerAgent', 'plannerModel', 'plannerSurface', 'plannerEffort', 'workerAgent', 'workerModel', 'workerEffort', 'qaAgent', 'qaModel', 'qaEffort']
 
 /** The run's links: each ref parsed (trust boundary: the panel's text is re-parsed here), or an error naming the bad one. */
+/** The run's links plus the Linear issues and GitHub PRs/issues the goal itself names by URL (a goal that is just a ticket URL links that ticket). */
+export function withGoalLinks(links, goal) {
+  const out = [...links]
+  for (const url of String(goal ?? '').match(/https?:\/\/\S+/gi) ?? []) {
+    const ref = parseRef(url)
+    if (ref && ref.kind !== 'reference' && !out.some((l) => l.kind === ref.kind && l.value === ref.value)) {
+      out.push(ref)
+    }
+  }
+  return out
+}
+
 export function parseLinks(refs) {
   const parsed = []
   for (const ref of Array.isArray(refs) ? refs : []) {
@@ -372,10 +384,11 @@ export async function startRun(deps, input = {}) {
   if (!String(goal ?? '').trim()) {
     return fail('input', 'empty_goal', 'Write a goal first.')
   }
-  const { links, error: linkError } = parseLinks(input.links)
+  const { links: chips, error: linkError } = parseLinks(input.links)
   if (linkError) {
     return fail('input', 'bad_link', linkError)
   }
+  const links = withGoalLinks(chips, goal)
   const ws = await resolveWorkspace(deps.host)
   if (newWorkspace) {
     // a new workspace needs a repo, not a focused workspace: the panel's repo choice wins, the focused one is the fallback
@@ -625,7 +638,15 @@ async function orcaJson(deps, args) {
     throw error
   }
   if (res.code !== 0) {
-    throw new MteError('orca_failed', (res.stderr || res.stdout || 'orca failed').trim().slice(0, 300))
+    // with --json orca reports the real reason as {"ok":false,"error":{...}} on stdout; stderr may only say "Command failed"
+    let reason = ''
+    try {
+      const err = JSON.parse(res.stdout)?.error
+      reason = err?.message ? `${err.code ? `${err.code}: ` : ''}${err.message}` : ''
+    } catch {
+      // not JSON: fall back to the raw text
+    }
+    throw new MteError('orca_failed', (reason || res.stderr || res.stdout || 'orca failed').trim().slice(0, 400))
   }
   const parsed = JSON.parse(res.stdout)
   return parsed.result ?? parsed

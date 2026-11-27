@@ -24,6 +24,7 @@ import {
   shadowedMessage,
   updateShadowingMte,
   repoOfWorkspace,
+  withGoalLinks,
   readClaim,
   resolveChoices,
   setupNote,
@@ -1088,4 +1089,18 @@ test('the repo picker defaults to the focused workspace repo', () => {
   assert.equal(repoOfWorkspace(repos, { id: 'r-2::/wt/x', path: '/wt/x' })?.id, 'r-2')
   assert.equal(repoOfWorkspace(repos, { id: 'wt-9', path: '/code/a/sub' })?.id, 'r-1')
   assert.equal(repoOfWorkspace(repos, null), null)
+})
+
+test('a ticket URL in the goal is linked too; orca\'s JSON error reason reaches the person', async () => {
+  assert.deepEqual(withGoalLinks([{ kind: 'issue', value: '45' }], 'Fix https://linear.app/c/issue/ENG-1091 and https://example.com/x'), [{ kind: 'issue', value: '45' }, { kind: 'linear', value: 'https://linear.app/c/issue/ENG-1091' }])
+  const { deps, calls } = newWsStubs({
+    ws: null,
+    create: { code: 1, stdout: JSON.stringify({ ok: false, error: { code: 'base_ref_not_found', message: 'origin/main does not exist in this repo' } }), stderr: 'Command failed: orca worktree create' }
+  })
+  const res = await startRun(deps, { goal: 'https://linear.app/c/issue/ENG-1091', newWorkspace: true, repoId: 'r-7' })
+  assert.equal(res.ok, false)
+  assert.match(res.error.message, /base_ref_not_found: origin\/main does not exist/)
+  const argv = orcaArgs(calls, 'worktree', 'create')[0]
+  assert.deepEqual(argv.slice(2, 4), ['--name', 'eng-1091'])
+  assert.ok(argv.includes('--linear-issue'), argv.join(' '))
 })
