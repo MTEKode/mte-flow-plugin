@@ -170,8 +170,8 @@ export default async function activate(orca) {
     await orca.storage.set('choices', Object.fromEntries(CHOICE_KEYS.filter((k) => typeof input?.[k] === 'string').map((k) => [k, input[k]])))
     return afterMutation(await startRun(deps, input))
   })
-  orca.panels.handle('harness.list', () => harnessList(deps))
-  orca.panels.handle('models.list', ({ agent }) => listModels(deps, { agent }))
+  orca.panels.handle('harness.list', (input) => harnessList(deps, input?.target ?? null))
+  orca.panels.handle('models.list', ({ agent, target }) => listModels(deps, { agent, target: target ?? null }))
   orca.panels.handle('goal.search', (input) => {
     const mine = ++searchSeq
     return searchGoal(deps, input, { isStale: () => mine !== searchSeq })

@@ -29,6 +29,7 @@ import {
   goalFromLinks,
   resolveWorkspace,
   findRemoteWorkspace,
+  targetArgs,
   installInWorkspace as installHere,
   remoteSetupLine,
   readClaim,
@@ -1263,4 +1264,20 @@ test('remote setup keeps an mte that is already new enough (a dev npm link stays
   const terms = orcaArgs(calls, 'terminal', 'create')
   assert.equal(terms[0][terms[0].indexOf('--command') + 1], 'mte --version && echo MTE_SETUP_"OK" || echo MTE_SETUP_"FAILED"')
   assert.match(terms[1][terms[1].indexOf('--command') + 1], /^mte install && mte install --user/)
+})
+
+test('harnesses are listed on the run target; a remote target lists only built-in models and says so', async () => {
+  assert.deepEqual(targetArgs({ env: 'env-1', worktree: 'r::/wt' }), ['--worktree', 'r::/wt', '--environment', 'env-1'])
+  assert.deepEqual(targetArgs(null), [])
+  assert.deepEqual(targetArgs({ env: '  ', worktree: 3 }), [])
+  const seen = []
+  const deps = { orcaCli: { bin: 'orca', env: {} }, exec: async (file, args) => (seen.push(args), { code: 0, stdout: JSON.stringify({ ok: true, result: { agents: [{ id: 'claude', name: 'Claude' }, { id: 'antigravity', name: 'Antigravity' }] } }), stderr: '' }) }
+  const res = await harnessList(deps, { env: 'env-1', worktree: null })
+  assert.deepEqual(res.harnesses.map((h) => h.id), ['claude', 'antigravity'])
+  assert.deepEqual(seen[0], ['agent', 'installed', '--environment', 'env-1', '--json'])
+  const agy = await listModels({ ...deps, exec: async () => { throw new Error('must not probe locally') } }, { agent: 'antigravity', target: { env: 'env-1', label: 'MAC' } })
+  assert.match(agy.error, /models on MAC are not listed; type a model id/)
+  const claude = await listModels(deps, { agent: 'claude', target: { env: 'env-1', label: 'MAC' } })
+  assert.equal(claude.error, null)
+  assert.ok(claude.models.length > 0)
 })

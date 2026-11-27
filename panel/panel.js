@@ -1,5 +1,5 @@
 // MTE Flow panel (html, isolated frame): all data comes from the worker through orca.plugin.request.
-import { addLink, attentionRow, exactLink, linkSource, withExact, claimCallout, createSearcher, filterRepos, filterRows, fitSelection, groupRepos, groupRows, osOf, iconFor, listHints, listKey, modelRows, mteDriftHint, mteRow, originIcon, originOf, phaseText, startNote } from './logic.mjs'
+import { addLink, attentionRow, runTarget, exactLink, linkSource, withExact, claimCallout, createSearcher, filterRepos, filterRows, fitSelection, groupRepos, groupRows, osOf, iconFor, listHints, listKey, modelRows, mteDriftHint, mteRow, originIcon, originOf, phaseText, startNote } from './logic.mjs'
 
 const $ = (id) => document.getElementById(id)
 const req = (name, params = {}) => orca.plugin.request(name, params, { timeoutMs: 120000 })
@@ -198,7 +198,7 @@ function chooser(field, key, title, withSurface) {
   return { draw }
 }
 
-const repoPick = repoPicker($('ws-repo'), { rows: () => st.snap?.repos ?? [], get: () => st.repoKey, set: (k) => { st.repoKey = k } })
+const repoPick = repoPicker($('ws-repo'), { rows: () => st.snap?.repos ?? [], get: () => st.repoKey, set: (k) => { st.repoKey = k; render() } })
 const choosers = [chooser($('f-planner'), 'planner', 'Orchestrator', true), chooser($('f-worker'), 'worker', 'Coder', false), chooser($('f-qa'), 'qa', 'QA', false)]
 const drawChoosers = () => choosers.forEach((c) => c.draw())
 
@@ -321,6 +321,7 @@ $('start').onclick = () => startRun(false)
 // the name/base inputs only exist for a new-workspace start
 $('new-ws').onchange = (e) => {
   $('ws-fields').hidden = !e.target.checked
+  render()
 }
 $('install').onclick = () => act('install', () => req('workspace.install'), () => 'MTE installed in this workspace.')
 $('repair').onclick = () => act('repair', () => req('setup.repair'), () => 'Setup finished: mte and the mte-flow skill are ready.')
@@ -343,14 +344,26 @@ async function load() {
   }
   render()
 }
-async function loadLists() {
-  const hl = await req('harness.list').catch(() => ({ harnesses: [], error: 'the harness.list request failed' }))
+/** Harnesses and models of the machine the run will happen on (runTarget); a newer target supersedes a slower answer. */
+let listSeq = 0
+async function loadLists(target = { env: null, worktree: null, label: 'this machine', key: 'local|' }) {
+  const mine = ++listSeq
+  st.listTarget = target.key
+  const hl = await req('harness.list', { target }).catch(() => ({ harnesses: [], error: 'the harness.list request failed' }))
+  if (mine !== listSeq) return
   st.harnesses = hl.harnesses ?? []
   st.harnessError = hl.error ?? null
+  st.models = {}
+  st.listLabel = target.label
   drawChoosers()
   // each harness fills in as its own CLI answers (agy takes seconds); a failed probe reports its error
-  await Promise.all(st.harnesses.map(async (h) => { st.models[h.id] = await req('models.list', { agent: h.id }).catch((e) => ({ models: [], efforts: [], error: String(e?.message ?? e) })); drawChoosers() }))
-  render()
+  await Promise.all(st.harnesses.map(async (h) => {
+    const m = await req('models.list', { agent: h.id, target }).catch((e) => ({ models: [], efforts: [], error: String(e?.message ?? e) }))
+    if (mine !== listSeq) return
+    st.models[h.id] = m
+    drawChoosers()
+  }))
+  if (mine === listSeq) render()
 }
 
 function callout(tone, title, body, ...buttons) {
@@ -389,6 +402,11 @@ function render() {
   const repos = s?.repos ?? []
   if (!repos.some((r) => r.key === st.repoKey)) st.repoKey = repos.some((r) => r.key === s?.focusedRepoKey) ? s.focusedRepoKey : ''
   repoPick.label()
+  // agents and models come from the machine the run will happen on: reload them when that machine changes
+  const target = runTarget({ newWorkspace: $('new-ws').checked, repos, repoKey: st.repoKey, workspace: s?.workspace })
+  if (s && target.key !== st.listTarget) void loadLists(target)
+  $('agents-host').textContent = target.env || target.worktree ? `Agents and models from ${target.label}` : ''
+  $('agents-host').hidden = !(target.env || target.worktree)
   const chips = st.links
   goal.placeholder = chips.length ? 'Optional: the linked items are the goal. Add context if you want…' : 'Describe the goal, or just add links below…'
   const chipBox = $('chips')
@@ -443,4 +461,3 @@ function render() {
 orca.plugin.on('state.changed', () => void load())
 orca.on?.('workspace.changed', () => void load())
 void load()
-void loadLists()

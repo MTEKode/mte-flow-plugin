@@ -362,3 +362,25 @@ export function withExact(exact, items) {
   const hit = items.find(same)
   return hit ? [hit, ...items.filter((it) => it !== hit)] : [exact, ...items]
 }
+
+/**
+ * Where the run will happen, so harnesses and models come from that machine: the picked repo's host for a new
+ * workspace, else the focused workspace's. `{ env, worktree, label, key }`; env and worktree null = this machine.
+ */
+export function runTarget({ newWorkspace, repos = [], repoKey, workspace }) {
+  if (newWorkspace) {
+    const r = repos.find((x) => x.key === repoKey)
+    if (r && (r.env || (r.hostId && r.hostId !== 'local'))) {
+      const worktree = r.hostId && r.hostId !== 'local' ? `path:${r.path}` : null
+      return { env: r.env ?? null, worktree, label: r.host, key: `${r.env ?? 'local'}|${worktree ?? ''}` }
+    }
+    return { env: null, worktree: null, label: 'this machine', key: 'local|' }
+  }
+  if (workspace?.env) {
+    return { env: workspace.env, worktree: workspace.id, label: workspace.host ?? workspace.env, key: `${workspace.env}|${workspace.id}` }
+  }
+  if (workspace?.hostId && workspace.hostId !== 'local') {
+    return { env: null, worktree: workspace.id, label: workspace.hostId.replace(/^ssh:/, ''), key: `local|${workspace.id}` }
+  }
+  return { env: null, worktree: null, label: 'this machine', key: 'local|' }
+}
