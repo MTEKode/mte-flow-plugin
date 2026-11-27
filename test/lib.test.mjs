@@ -22,6 +22,7 @@ import {
   plannerHome,
   releaseWorker,
   shadowedMessage,
+  updateShadowingMte,
   readClaim,
   resolveChoices,
   setupNote,
@@ -1030,4 +1031,39 @@ test('setup names the stale mte that shadows the fresh install on PATH (the "ins
   }
   const missing = await shadowedMessage(deps, 'mte', '0.8.4', { missing: true, code: 127, stdout: '', stderr: '' })
   assert.match(missing, /is not on PATH: add npm's global bin folder/)
+})
+
+test('repair updates older MTE copies that PATH finds first: npm prefixes are reinstalled, old shims moved aside, foreign files untouched', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX layout')
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const root = mkdtempSync(`${tmpdir()}/mte-shadow-`)
+  // an npm prefix (another Node) that owns @mtekode/mte 0.3.0
+  mkdirSync(`${root}/oldnode/bin`, { recursive: true })
+  mkdirSync(`${root}/oldnode/lib/node_modules/@mtekode/mte`, { recursive: true })
+  writeFileSync(`${root}/oldnode/lib/node_modules/@mtekode/mte/package.json`, JSON.stringify({ name: '@mtekode/mte', version: '0.3.0' }))
+  writeFileSync(`${root}/oldnode/bin/mte`, '#!/usr/bin/env node\n')
+  // a retired ~/.mte shim, and someone else's tool also called mte
+  mkdirSync(`${root}/shim`, { recursive: true })
+  writeFileSync(`${root}/shim/mte`, '#!/bin/sh\nexec node "$HOME/.mte/bin/mte.mjs" "$@"\n')
+  mkdirSync(`${root}/other`, { recursive: true })
+  writeFileSync(`${root}/other/mte`, '#!/bin/sh\necho 1.0.0\n')
+  const calls = []
+  const renamed = []
+  const deps = {
+    rename: (from, to) => renamed.push([from, to]),
+    exec: async (file, args) => {
+      calls.push([file, ...args])
+      if (file === 'npm' && args[0] === 'prefix') return { code: 0, stdout: '/usr/local\n', stderr: '' }
+      if (file === 'which') return { code: 0, stdout: [`${root}/oldnode/bin/mte`, `${root}/shim/mte`, `${root}/other/mte`, '/usr/local/bin/mte', `${root}/after/mte`].join('\n'), stderr: '' }
+      if (args[0] === '--version') return { code: 0, stdout: file.includes('/other/') ? '0.1.0' : '0.3.0', stderr: '' }
+      if (file === 'npm') return { code: 0, stdout: '', stderr: '' }
+      return { code: 1, stdout: '', stderr: '' }
+    }
+  }
+  const done = await updateShadowingMte(deps, 'mte', '0.8.6')
+  assert.deepEqual(calls.filter((c) => c[0] === 'npm' && c[1] === 'i'), [['npm', 'i', '-g', '--prefix', `${root}/oldnode`, 'https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v0.8.6/mtekode-mte-0.8.6.tgz']])
+  assert.deepEqual(renamed, [[`${root}/shim/mte`, `${root}/shim/mte.old`]])
+  assert.ok(done.some((d) => d.includes(`left ${root}/other/mte alone`)), done.join('\n'))
+  assert.ok(!calls.some((c) => c[0] === `${root}/after/mte`), 'copies after the fresh one are never run')
 })
