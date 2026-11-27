@@ -193,7 +193,7 @@ async function act(name, run, success) {
   void load()
 }
 const startRun = (replace = false) =>
-  act('start', () => req('run.start', { goal: goal.value, plannerAgent: st.planner.agent, plannerModel: st.planner.model || '', plannerSurface: st.planner.surface, plannerEffort: st.planner.effort || '', workerAgent: st.worker.agent, workerModel: st.worker.model || '', workerEffort: st.worker.effort || '', qaAgent: st.qa.agent, qaModel: st.qa.model || '', qaEffort: st.qa.effort || '', links: st.links.map((l) => l.ref), replace, newWorkspace: $('new-ws').checked, workspaceName: $('ws-name').value, baseBranch: $('ws-base').value }),
+  act('start', () => req('run.start', { goal: goal.value, plannerAgent: st.planner.agent, plannerModel: st.planner.model || '', plannerSurface: st.planner.surface, plannerEffort: st.planner.effort || '', workerAgent: st.worker.agent, workerModel: st.worker.model || '', workerEffort: st.worker.effort || '', qaAgent: st.qa.agent, qaModel: st.qa.model || '', qaEffort: st.qa.effort || '', links: st.links.map((l) => l.ref), replace, newWorkspace: $('new-ws').checked, repoId: $('ws-repo').value, workspaceName: $('ws-name').value, baseBranch: $('ws-base').value }),
     (r) => { st.links = []; return startNote(r) })
 $('start').onclick = () => startRun(false)
 // the name/base inputs only exist for a new-workspace start
@@ -263,6 +263,12 @@ function render() {
   $('active').textContent = `${s?.activeWorkers ?? 0} active`
   const version = s ? mteRow(s.mte) : null
   $('ws').textContent = (s?.workspace ? `Workspace: ${s.workspace.name} · ${s.workspace.path}` : 'No workspace focused.') + (version ? ` · ${version}` : '')
+  // new-workspace repo picker: keep the person's pick across reloads; default to the focused workspace's repo
+  const repoSel = $('ws-repo')
+  const repos = s?.repos ?? []
+  const picked = repoSel.value || s?.focusedRepoId || ''
+  repoSel.replaceChildren(el('option', { value: '', textContent: repos.length ? 'Repo…' : 'No repos in Orca' }), ...repos.map((r) => el('option', { value: r.id, textContent: r.name, title: r.path })))
+  repoSel.value = repos.some((r) => r.id === picked) ? picked : ''
   const chips = st.links
   const chipBox = $('chips')
   chipBox.hidden = chips.length === 0

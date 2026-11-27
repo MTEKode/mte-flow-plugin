@@ -8,6 +8,8 @@ import {
   describeClaim,
   dismissDepthReminder,
   ensureSetup,
+  listRepos,
+  repoOfWorkspace,
   mteIsCurrent,
   focusWorkspace,
   harnessList,
@@ -104,10 +106,11 @@ export default async function activate(orca) {
     // a settings change re-seeds (resolveChoices drops stale overrides)
     const fresh = await readSettings(host)
     const settings = { ...fresh, ...(await resolveChoices(orca.storage, fresh)) }
-    const [orchestration, mte, workspace] = await Promise.all([
+    const [orchestration, mte, workspace, repos] = await Promise.all([
       listOrchestrators(deps),
       checkMte(deps, settings),
-      resolveWorkspace(host).catch(() => null)
+      resolveWorkspace(host).catch(() => null),
+      listRepos(deps)
     ])
     // the focused workspace's planner claim: the panel warns about a conflict before Start, not after a failed one
     let claim = null
@@ -133,6 +136,8 @@ export default async function activate(orca) {
       settings,
       mte,
       workspace,
+      repos,
+      focusedRepoId: repoOfWorkspace(repos, workspace)?.id ?? null,
       claim,
       claimError,
       setup,

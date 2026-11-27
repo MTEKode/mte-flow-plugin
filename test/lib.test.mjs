@@ -23,6 +23,7 @@ import {
   releaseWorker,
   shadowedMessage,
   updateShadowingMte,
+  repoOfWorkspace,
   readClaim,
   resolveChoices,
   setupNote,
@@ -62,6 +63,7 @@ function stubs({ settings = {}, exec, ws = WS, home = '/home/me', gitPaths, clai
       call: async (method, params) => {
         calls.push({ kind: 'host', method, params })
         if (method === 'workspace.readContext') {
+          if (!ws) return null
           return { workspaceId: ws.id, branch: ws.branch, displayName: ws.name, terminals: [] }
         }
         if (method === 'workspace.list') {
@@ -851,9 +853,10 @@ test('qa pin: set with --role qa next to the coder pin; skipped without a qa mod
 // ---- panel v4: start run in a new workspace ----
 
 /** stubs() whose orca answers the create flow; `show` carries repoId + linkedItems, `create` a worktree receipt. */
-function newWsStubs({ show, create, launch = { outcome: { kind: 'structured', handle: 'h1', sessionId: 's1' } }, addRef = {}, settings = {} } = {}) {
+function newWsStubs({ show, create, launch = { outcome: { kind: 'structured', handle: 'h1', sessionId: 's1' } }, addRef = {}, settings = {}, ws = WS } = {}) {
   const { deps, calls } = stubs({
     settings,
+    ws,
     exec: async (file, args, opts) => {
       calls.push({ kind: 'exec', file, args, cwd: opts?.cwd })
       if (file !== ORCA) {
@@ -861,6 +864,7 @@ function newWsStubs({ show, create, launch = { outcome: { kind: 'structured', ha
       }
       if (args[0] === 'worktree' && args[1] === 'show') return show ? orcaOut(show) : { code: 1, stdout: '', stderr: 'show refused' }
       if (args[0] === 'worktree' && args[1] === 'create') return create ?? orcaOut({ worktree: { id: 'r-9::/new/ws', path: '/new/ws', displayName: 'shown' } })
+      if (args[0] === 'repo' && args[1] === 'list') return orcaOut({ repos: [{ id: 'r-7', path: '/code/app', displayName: 'app', kind: 'git' }, { id: 'f-1', path: '/notes', kind: 'folder' }] })
       if (args[0] === 'reference') return orcaOut(addRef)
       if (args[0] === 'worktree' && args[1] === 'set') return orcaOut({})
       if (args[0] === 'agent' && args[1] === 'launch') return orcaOut(launch)
@@ -1066,4 +1070,22 @@ test('repair updates older MTE copies that PATH finds first: npm prefixes are re
   assert.deepEqual(renamed, [[`${root}/shim/mte`, `${root}/shim/mte.old`]])
   assert.ok(done.some((d) => d.includes(`left ${root}/other/mte alone`)), done.join('\n'))
   assert.ok(!calls.some((c) => c[0] === `${root}/after/mte`), 'copies after the fresh one are never run')
+})
+
+test('new workspace needs a repo, not a focused workspace: the picked repo is used and checked against Orca', async () => {
+  const none = newWsStubs({ ws: null })
+  const ok = await startRun(none.deps, { goal: 'x', newWorkspace: true, repoId: 'r-7' })
+  assert.equal(ok.ok, true, JSON.stringify(ok))
+  assert.equal(orcaArgs(none.calls, 'worktree', 'create')[0][5], 'id:r-7')
+  assert.equal((await startRun(newWsStubs({ ws: null }).deps, { goal: 'x', newWorkspace: true, repoId: 'r-evil' })).error.code, 'bad_repo')
+  assert.equal((await startRun(newWsStubs({ ws: null }).deps, { goal: 'x', newWorkspace: true, repoId: 'f-1' })).error.code, 'bad_repo') // folders are not git repos
+  assert.equal((await startRun(newWsStubs({ ws: null }).deps, { goal: 'x', newWorkspace: true })).error.code, 'no_repo')
+  assert.equal((await startRun(newWsStubs({ ws: null }).deps, { goal: 'x' })).error.code, 'no_workspace') // toggle off still needs focus
+})
+
+test('the repo picker defaults to the focused workspace repo', () => {
+  const repos = [{ id: 'r-1', path: '/code/a' }, { id: 'r-2', path: '/code/b' }]
+  assert.equal(repoOfWorkspace(repos, { id: 'r-2::/wt/x', path: '/wt/x' })?.id, 'r-2')
+  assert.equal(repoOfWorkspace(repos, { id: 'wt-9', path: '/code/a/sub' })?.id, 'r-1')
+  assert.equal(repoOfWorkspace(repos, null), null)
 })
