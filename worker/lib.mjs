@@ -11,7 +11,7 @@ import { createWorkspaceArgs, goalSlug, parseRef } from '../panel/logic.mjs'
 export const PROMPT_MAX = 4000
 export const TRUNCATION_MARKER = '\n[goal truncated]'
 /** The mte CLI version this plugin release is built for; the setup installs it when `mte` is missing or older. */
-export const REQUIRED_MTE_VERSION = '0.8.15'
+export const REQUIRED_MTE_VERSION = '0.8.16'
 export const MIN_NODE_MAJOR = 24
 export const tarballUrl = (version) =>
   `https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v${version}/mtekode-mte-${version}.tgz`
@@ -193,7 +193,7 @@ export async function resolveWorkspace(host) {
     workspaces.find((w) => ctx.workspaceId && w.id === ctx.workspaceId) ??
     workspaces.find((w) => w.branch === ctx.branch && w.name === ctx.displayName)
   if (row) {
-    return { id: row.id, name: row.name, path: row.path, branch: row.branch }
+    return { id: row.id, name: row.name, path: row.path, branch: row.branch, hostId: row.hostId ?? 'local' }
   }
   // not on this machine: a workspace of a paired Orca server (shown in this sidebar) is found on that server
   return host.findRemote ? host.findRemote(ctx) : null
@@ -1375,15 +1375,26 @@ export const dismissDepthReminder = (storage) => storage.set(DEPTH_REMINDER_KEY,
 export const HARNESSES = ['claude', 'antigravity']
 
 /** Installed supported harnesses: `orca agent installed --json` -> [{ id, name, default }]. */
-export async function listHarnesses(deps) {
-  const res = await orcaJson(deps, ['agent', 'installed'])
+/**
+ * Where agents run for a run's target: `env` (a paired Orca server) and/or `worktree` (a selector; for an SSH host
+ * it makes Orca check that host). Both null = this machine. Only plain strings pass; Orca rejects unknown ones.
+ */
+export function targetArgs(target) {
+  const str = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null)
+  const env = str(target?.env)
+  const worktree = str(target?.worktree)
+  return [...(worktree ? ['--worktree', worktree] : []), ...(env ? ['--environment', env] : [])]
+}
+
+export async function listHarnesses(deps, target = null) {
+  const res = await orcaJson(deps, ['agent', 'installed', ...targetArgs(target)])
   return (res.agents ?? []).filter((a) => HARNESSES.includes(a.id)).map((a) => ({ id: a.id, name: a.name ?? a.id, default: Boolean(a.default) }))
 }
 
 /** `harness.list` response: a failed listing surfaces as `error` (the panel hints), never as a silent empty list. */
-export async function harnessList(deps) {
+export async function harnessList(deps, target = null) {
   try {
-    return { harnesses: await listHarnesses(deps), error: null }
+    return { harnesses: await listHarnesses(deps, target), error: null }
   } catch (error) {
     return { harnesses: [], error: String(error?.message ?? error) }
   }
@@ -1419,10 +1430,17 @@ export function readExtraModels(deps, agent) {
 }
 
 /** Models + effort values for one harness; probed lists are cached in plugin storage. A failed probe comes back as `error`, not silent emptiness. */
-export async function listModels(deps, { agent }) {
+export async function listModels(deps, { agent, target = null }) {
   let models = (MODEL_SEEDS[agent] ?? []).map((id) => ({ id }))
   let error = null
   const probe = MODEL_PROBES[agent]
+  if (targetArgs(target).length) {
+    // another machine: its model CLI and ~/.mte/models.json cannot be read from here, so only the built-in list shows
+    if (probe) {
+      error = `models on ${String(target?.label ?? 'that host')} are not listed; type a model id`
+    }
+    return { models, efforts: effortsFor(agent), error }
+  }
   if (probe) {
     const key = `models:${agent}`
     const cached = await deps.storage?.get(key)
