@@ -1,5 +1,5 @@
 // MTE Flow panel (html, isolated frame): all data comes from the worker through orca.plugin.request.
-import { addLink, attentionRow, linkSource, claimCallout, createSearcher, filterRepos, filterRows, fitSelection, groupRepos, groupRows, osOf, iconFor, listHints, listKey, modelRows, mteDriftHint, mteRow, originIcon, originOf, parseRef, phaseText, startNote } from './logic.mjs'
+import { addLink, attentionRow, exactLink, linkSource, withExact, claimCallout, createSearcher, filterRepos, filterRows, fitSelection, groupRepos, groupRows, osOf, iconFor, listHints, listKey, modelRows, mteDriftHint, mteRow, originIcon, originOf, phaseText, startNote } from './logic.mjs'
 
 const $ = (id) => document.getElementById(id)
 const req = (name, params = {}) => orca.plugin.request(name, params, { timeoutMs: 120000 })
@@ -204,45 +204,55 @@ const drawChoosers = () => choosers.forEach((c) => c.draw())
 
 const goal = $('goal')
 
-// ---- links: exact refs add on Enter, free text searches (goal.search); a suggestion adds only when picked ----
+// ---- links: what is typed is searched (goal.search); text that already is a link shows as the top row. Rows are
+// picked with click, or ↑ ↓ and Enter; nothing is added on its own ----
 const links = $('links')
 const linksList = $('links-list')
-let linkItems = []
-let li = 0
+let linkItems = [] // what the list shows (exact row merged with the results)
+let foundItems = [] // the last search results
+let exactRow = null // the row for text that is already a link
+let li = -1
+let linkHints = []
+let linkQueried = false
+let linkSearching = null // the query being searched, while the spinner shows
 const setLinkHint = (text) => {
   const hint = $('links-hint')
   hint.textContent = text ?? ''
   hint.hidden = !text
 }
-let linkSearching = null // the query being searched, while the spinner shows
 const linkBox = links.parentElement
-const closeLinks = () => { linkSearching = null; linkBox.classList.remove('searching'); linksList.hidden = true; links.setAttribute('aria-expanded', 'false'); links.setAttribute('aria-activedescendant', ''); linkItems = [] }
+const closeLinks = () => { linkSearching = null; linkBox.classList.remove('searching'); linksList.hidden = true; links.setAttribute('aria-expanded', 'false'); links.setAttribute('aria-activedescendant', ''); linkItems = []; foundItems = []; exactRow = null; linkHints = []; linkQueried = false }
 function drawLinks() {
+  linkItems = withExact(exactRow, foundItems)
+  li = Math.min(li, linkItems.length - 1)
   linkBox.classList.toggle('searching', Boolean(linkSearching))
+  const empty = linkItems.length === 0
   linksList.replaceChildren(
-    ...(linkSearching ? [el('div', { className: 'opt muted searching-row', role: 'status' }, el('span', { className: 'spinner', ariaHidden: 'true' }), el('span', { className: 't', textContent: `Searching Linear and GitHub for “${linkSearching}”…` }))] : []),
     ...linkItems.map((it, i) => {
-      const linked = st.links.some((l) => l.ref === it.url || l.label === it.id)
+      const linked = st.links.some((l) => l.ref === it.url || (it.id && l.label === it.id))
       const kind = it.kind === 'pr' ? 'PR' : it.kind === 'issue' ? 'Issue' : null
-      const row = el('div', { id: `lk-${i}`, className: 'opt link' + (i === li ? ' active' : '') + (linked ? ' linked' : ''), role: 'option', ariaSelected: String(linked) },
-        linkIcon(it), el('code', { textContent: it.id ?? '' }), el('span', { className: 't', textContent: it.title ?? it.url ?? '' }),
+      const title = it.title ?? (it.exact ? (linkSearching ? 'Looking it up…' : it.id ? 'Add this link' : it.url) : it.url ?? '')
+      const row = el('div', { id: `lk-${i}`, className: 'opt link' + (i === li ? ' active' : '') + (linked ? ' linked' : '') + (it.exact && !it.title ? ' exact' : ''), role: 'option', ariaSelected: String(i === li) },
+        linkIcon(it), ...(it.id ? [el('code', { textContent: it.id })] : []), el('span', { className: 't', textContent: title }),
         ...(kind ? [el('span', { className: 'tag', textContent: kind })] : []), ...(linked ? [el('span', { className: 'tag', textContent: '✓ linked' })] : []))
       row.onmousedown = (e) => { e.preventDefault(); sendLink(it) }
+      row.onmouseenter = () => { li = i; for (const n of linksList.querySelectorAll('.opt.link')) n.classList.toggle('active', n === row) }
       return row
     }),
-    ...(!linkSearching && linkItems.length === 0 && linkHints.length ? linkHints.map((h) => el('div', { className: 'opt muted', textContent: h })) : []),
-    ...(!linkSearching && linkItems.length === 0 && linkHints.length === 0 && linkQueried ? [el('div', { className: 'opt muted', textContent: 'No issues or PRs match.' })] : [])
+    ...(linkSearching ? [el('div', { className: 'opt muted searching-row', role: 'status' }, el('span', { className: 'spinner', ariaHidden: 'true' }), el('span', { className: 't', textContent: `Searching Linear and GitHub for “${linkSearching}”…` }))] : []),
+    ...(!linkSearching && empty ? linkHints.map((h) => el('div', { className: 'opt muted', textContent: h })) : []),
+    ...(!linkSearching && empty && linkHints.length === 0 && linkQueried ? [el('div', { className: 'opt muted', textContent: 'No issues or PRs match.' })] : [])
   )
-  const open = Boolean(linkSearching) || linkItems.length > 0 || linkHints.length > 0 || linkQueried
+  const open = !linksList.firstChild ? false : true
   linksList.hidden = !open
   links.setAttribute('aria-expanded', String(open))
   links.setAttribute('aria-activedescendant', linkItems[li] ? `lk-${li}` : '')
   linksList.querySelector('.active')?.scrollIntoView({ block: 'nearest' })
 }
-function sendLink(it = {}) {
-  const ref = String(it?.url || it?.id || links.value).trim()
-  closeLinks()
+function sendLink(it) {
+  const ref = String(it?.url || it?.id || '').trim()
   linkSearch.cancel()
+  closeLinks()
   const next = addLink(st.links, ref, it?.id)
   if (!next) return setLinkHint(`“${ref.slice(0, 60)}” is not an identifier or URL: pick a suggestion instead.`)
   setLinkHint('')
@@ -256,31 +266,40 @@ function unlink(link) {
   st.links = st.links.filter((l) => l !== link)
   render()
 }
-// nothing is highlighted until the person moves through the list: Enter never picks a suggestion on its own
-let linkHints = []
-let linkQueried = false
 const linkSearch = createSearcher({
   request: (q) => req('goal.search', { q }),
   onSearching: (q) => { linkSearching = q; drawLinks() },
-  onResult: (res) => { linkSearching = null; linkItems = res?.items ?? []; linkHints = res?.hints ?? []; linkQueried = Boolean(res); li = -1; drawLinks() }
+  onResult: (res) => { linkSearching = null; foundItems = res?.items ?? []; linkHints = res?.hints ?? []; linkQueried = Boolean(res); drawLinks() }
 })
 links.addEventListener('input', () => {
   setLinkHint('')
-  if (parseRef(links.value)) { linkSearch.cancel(); closeLinks(); return }
-  linkSearch.input(links.value)
+  exactRow = exactLink(links.value)
+  // a typed link is the top row and Enter picks it; free text highlights nothing until the person moves
+  li = exactRow ? 0 : -1
+  foundItems = []
+  linkQueried = false
+  linkHints = []
+  if (exactRow && !exactRow.search) {
+    linkSearch.cancel()
+    linkSearching = null
+    drawLinks()
+    return
+  }
+  drawLinks()
+  linkSearch.input(exactRow?.search ?? links.value)
 })
 links.addEventListener('keydown', (e) => {
-  const exact = parseRef(links.value)
-  if (e.key === 'Enter' && (exact || (!linksList.hidden && linkItems[li]))) { e.preventDefault(); sendLink(exact ? {} : linkItems[li]); return }
+  if (e.key === 'Enter' && linkItems[li]) { e.preventDefault(); sendLink(linkItems[li]); return }
+  if (e.key === 'Enter') { e.preventDefault(); return }
   if (linksList.hidden || !linkItems.length || !['ArrowDown', 'ArrowUp', 'Escape'].includes(e.key)) return
   const r = listKey(li, linkItems.length, e.key)
   e.preventDefault()
   li = r.index
   if (r.action === 'select' && linkItems[li]) sendLink(linkItems[li])
-  else if (r.action === 'close') closeLinks()
+  else if (r.action === 'close') { linkSearch.cancel(); closeLinks() }
   else drawLinks()
 })
-links.addEventListener('blur', () => setTimeout(() => { linkSearch.cancel(); linkHints = []; linkQueried = false; closeLinks() }, 120))
+links.addEventListener('blur', () => setTimeout(() => { linkSearch.cancel(); closeLinks() }, 120))
 
 // ---- actions ----
 async function act(name, run, success) {
