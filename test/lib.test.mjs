@@ -21,6 +21,7 @@ import {
   listAttention,
   plannerHome,
   releaseWorker,
+  shadowedMessage,
   readClaim,
   resolveChoices,
   setupNote,
@@ -1013,4 +1014,20 @@ test('release re-checks the dispatch id before calling orca', async () => {
   assert.equal(calls.length, 0)
   assert.equal((await releaseWorker(deps, 'ctx_abc123')).ok, true)
   assert.deepEqual(calls[0], ['orchestration', 'worker-release', '--dispatch', 'ctx_abc123', '--json'])
+})
+
+test('setup names the stale mte that shadows the fresh install on PATH (the "installed but still 0.3.0" case)', async () => {
+  const deps = {
+    exec: async (file, args) => {
+      if (file === 'npm' && args[0] === 'prefix') return { code: 0, stdout: '/usr/local\n', stderr: '' }
+      if (file === 'which' || file === 'where') return { code: 0, stdout: '/usr/local/bin/mte.ps1\n/home/me/.mte/bin/mte\n/usr/local/bin/mte\n', stderr: '' }
+      return { code: 1, stdout: '', stderr: '' }
+    }
+  }
+  const msg = await shadowedMessage(deps, 'mte', '0.8.4', { code: 0, stdout: '0.3.0\n', stderr: '' })
+  if (process.platform !== 'win32') {
+    assert.match(msg, /installed at \/usr\/local\/bin\/mte, but `mte` on PATH runs 0\.3\.0 from \/home\/me\/\.mte\/bin\/mte\. Remove that old copy/)
+  }
+  const missing = await shadowedMessage(deps, 'mte', '0.8.4', { missing: true, code: 127, stdout: '', stderr: '' })
+  assert.match(missing, /is not on PATH: add npm's global bin folder/)
 })
