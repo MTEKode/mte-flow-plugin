@@ -27,6 +27,7 @@ import {
   withGoalLinks,
   listRepos,
   goalFromLinks,
+  resolveWorkspace,
   remoteSetupLine,
   readClaim,
   resolveChoices,
@@ -1200,4 +1201,13 @@ test('no goal is needed when links are added: the links become the goal and name
   const prompt = orcaArgs(calls, 'agent', 'launch')[0].at(-2)
   assert.ok(prompt.startsWith('/mte-flow Work on the linked item: https://linear.app/c/issue/ENG-1091'), prompt)
   assert.equal((await startRun(newWsStubs({ ws: null }).deps, { goal: '', newWorkspace: true, repoId: 'r-7' })).error.code, 'empty_goal')
+})
+
+test('with no focused workspace right now (the click went to this panel), the last focused one stands in', async () => {
+  const rows = [{ id: 'identity:wt2:local:a', name: 'development', branch: 'development', path: '/repo' }, { id: 'identity:wt2:local:b', name: 'eng-1051', branch: 'MTEKode/eng-1051', path: '/wt/eng-1051' }]
+  const host = (ctx, last) => ({ lastContext: () => last, call: async (m) => (m === 'workspace.readContext' ? ctx : { workspaces: rows }) })
+  const last = { workspaceId: 'identity:wt2:local:b', branch: 'MTEKode/eng-1051', displayName: 'eng-1051', terminals: [] }
+  assert.equal((await resolveWorkspace(host(null, last)))?.path, '/wt/eng-1051')
+  assert.equal((await resolveWorkspace(host({ workspaceId: 'identity:wt2:local:a', branch: 'development', displayName: 'development', terminals: [] }, last)))?.path, '/repo', 'a live focus always wins')
+  assert.equal(await resolveWorkspace(host(null, null)), null)
 })
