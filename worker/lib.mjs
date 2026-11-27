@@ -11,7 +11,7 @@ import { createWorkspaceArgs, goalSlug, parseRef } from '../panel/logic.mjs'
 export const PROMPT_MAX = 4000
 export const TRUNCATION_MARKER = '\n[goal truncated]'
 /** The mte CLI version this plugin release is built for; the setup installs it when `mte` is missing or older. */
-export const REQUIRED_MTE_VERSION = '0.8.4'
+export const REQUIRED_MTE_VERSION = '0.8.5'
 export const MIN_NODE_MAJOR = 24
 export const tarballUrl = (version) =>
   `https://github.com/MTEKode/mte-flow-plugin/releases/download/mte-v${version}/mtekode-mte-${version}.tgz`
@@ -887,6 +887,39 @@ async function tryExec(deps, file, args, opts) {
   }
 }
 
+/** Where npm put the `mte` it just installed: `<prefix>/bin/mte`, or `<prefix>\\mte.cmd` on Windows; null when npm cannot say. */
+async function npmGlobalMte(deps) {
+  const res = await tryExec(deps, 'npm', ['prefix', '-g'], { timeoutMs: 15_000 })
+  const prefix = res.code === 0 ? res.stdout.trim() : ''
+  if (!prefix) {
+    return null
+  }
+  return process.platform === 'win32' ? win32.join(prefix, 'mte.cmd') : `${prefix}/bin/mte`
+}
+
+/** Every `mte` on PATH, in lookup order (`where` on Windows, `which -a` elsewhere); [] when it cannot tell. */
+async function mteOnPath(deps, bin) {
+  const res = await tryExec(deps, process.platform === 'win32' ? 'where' : 'which', process.platform === 'win32' ? [bin] : ['-a', bin], { timeoutMs: 15_000 }).catch(() => null)
+  return res?.code === 0 ? res.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean) : []
+}
+
+/**
+ * Why `mte --version` still answers wrong after `npm i -g`: almost always an older copy earlier on PATH (an old global
+ * install, another Node's prefix, a leftover shim). Names both files, so the person removes the stale one; the plugin
+ * never deletes it itself, and never just switches to the new path, because agents and hooks run `mte` from PATH.
+ */
+export async function shadowedMessage(deps, bin, required, current) {
+  const [installedAt, onPath] = await Promise.all([npmGlobalMte(deps), mteOnPath(deps, bin)])
+  if (current.missing) {
+    return `mte ${required} was installed${installedAt ? ` at ${installedAt}` : ''} but \`${bin}\` is not on PATH: add npm's global bin folder (${installedAt ? installedAt.replace(/[\\/][^\\/]+$/, '') : 'see `npm prefix -g`'}) to PATH, then press Repair setup.`
+  }
+  const found = parseVersion(current.stdout)?.join('.') ?? firstLine(current)
+  // compare folders, not files: npm leaves `mte`, `mte.cmd` and `mte.ps1` side by side on Windows
+  const dir = (p) => p.replace(/[\\/][^\\/]+$/, '').toLowerCase()
+  const stale = onPath.find((p) => !installedAt || dir(p) !== dir(installedAt)) ?? onPath[0]
+  return `mte ${required} was installed${installedAt ? ` at ${installedAt}` : ''}, but \`${bin}\` on PATH runs ${found}${stale ? ` from ${stale}` : ''}. Remove that old copy (or put npm's global bin folder before it in PATH), then press Repair setup: agents and hooks run \`mte\` from PATH, so they would keep the old one.`
+}
+
 const firstLine = (res) => ((res.stderr || res.stdout || '').trim().split('\n')[0] ?? '').slice(0, 300)
 
 /**
@@ -937,7 +970,7 @@ export async function ensureSetup(deps, { force = false } = {}) {
     }
     current = await tryExec(deps, settings.mteBin, ['--version'], { timeoutMs: 15_000 })
     if (current.missing || current.code !== 0 || compareVersions(current.stdout, required) < 0) {
-      return fail('setup', 'mte_not_on_path', `mte ${required} was installed but \`${settings.mteBin} --version\` still fails${current.missing ? ' (not on PATH: add npm\'s global bin folder, see `npm bin -g`, to PATH)' : `: ${firstLine(current)}`}.`)
+      return fail('setup', current.missing ? 'mte_not_on_path' : 'mte_shadowed', await shadowedMessage(deps, settings.mteBin, required, current))
     }
     installed = true
   }
